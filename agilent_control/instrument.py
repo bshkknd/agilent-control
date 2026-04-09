@@ -287,5 +287,68 @@ class Keysight33600A:
     def apply_factory_defaults(self) -> None:
         self.apply_settings(self.factory_defaults)
 
+    def configure_ttl_single_pulse(
+        self,
+        frequency_hz: float = 10.0,
+        pulse_width_s: float = 10e-6,
+        high_level_v: float = 5.0,
+        low_level_v: float = 0.0,
+        trigger_slope: str = "POS",
+        edge_time_s: float = 5e-9,
+        reset: bool = True,
+    ) -> None:
+        slope = trigger_slope.upper()
+        if slope not in {"POS", "NEG"}:
+            raise ValueError("trigger_slope must be 'POS' or 'NEG'")
+        if pulse_width_s <= 0:
+            raise ValueError("pulse_width_s must be positive")
+        if frequency_hz <= 0:
+            raise ValueError("frequency_hz must be positive")
+        if edge_time_s <= 0:
+            raise ValueError("edge_time_s must be positive")
+        if high_level_v <= low_level_v:
+            raise ValueError("high_level_v must be greater than low_level_v")
+
+        commands = []
+        if reset:
+            commands.append("*RST")
+        commands.extend(
+            [
+                "OUTP:LOAD INF",
+                "FUNC PULS",
+                f"FREQ {frequency_hz:.12g}",
+                "FUNC:PULS:HOLD WIDT",
+                f"FUNC:PULS:WIDT {pulse_width_s:.12g}",
+                f"FUNC:PULS:TRAN {edge_time_s:.12g}",
+                f"VOLT:LOW {low_level_v:.12g}",
+                f"VOLT:HIGH {high_level_v:.12g}",
+                "BURS:MODE TRIG",
+                "BURS:NCYC 1",
+                f"TRIG:SOUR EXT",
+                f"TRIG:SLOP {slope}",
+                "BURS:STAT ON",
+                "OUTP ON",
+            ]
+        )
+        self.apply_settings(commands)
+
+    def read_ttl_single_pulse_config(self) -> dict[str, str]:
+        queries = (
+            "FUNC?",
+            "FREQ?",
+            "FUNC:PULS:WIDT?",
+            "FUNC:PULS:TRAN?",
+            "VOLT:HIGH?",
+            "VOLT:LOW?",
+            "OUTP:LOAD?",
+            "BURS:MODE?",
+            "BURS:NCYC?",
+            "TRIG:SOUR?",
+            "TRIG:SLOP?",
+            "BURS:STAT?",
+            "OUTP?",
+        )
+        return {command: self.query(command) for command in queries}
+
     def close(self) -> None:
         self.resource.close()

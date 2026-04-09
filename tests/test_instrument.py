@@ -56,6 +56,106 @@ class Keysight33600ATest(unittest.TestCase):
 
         self.assertTrue(resource.is_closed)
 
+    def test_configure_ttl_single_pulse_writes_expected_sequence(self) -> None:
+        resource = FakeVisaResource()
+        instrument = Keysight33600A(resource=resource)
+
+        instrument.configure_ttl_single_pulse()
+
+        self.assertEqual(
+            resource.writes,
+            [
+                "*RST",
+                "OUTP:LOAD INF",
+                "FUNC PULS",
+                "FREQ 10",
+                "FUNC:PULS:HOLD WIDT",
+                "FUNC:PULS:WIDT 1e-05",
+                "FUNC:PULS:TRAN 5e-09",
+                "VOLT:LOW 0",
+                "VOLT:HIGH 5",
+                "BURS:MODE TRIG",
+                "BURS:NCYC 1",
+                "TRIG:SOUR EXT",
+                "TRIG:SLOP POS",
+                "BURS:STAT ON",
+                "OUTP ON",
+            ],
+        )
+
+    def test_configure_ttl_single_pulse_accepts_overrides(self) -> None:
+        resource = FakeVisaResource()
+        instrument = Keysight33600A(resource=resource)
+
+        instrument.configure_ttl_single_pulse(
+            frequency_hz=20.0,
+            pulse_width_s=20e-6,
+            high_level_v=3.3,
+            low_level_v=0.2,
+            trigger_slope="neg",
+            edge_time_s=10e-9,
+            reset=False,
+        )
+
+        self.assertEqual(
+            resource.writes,
+            [
+                "OUTP:LOAD INF",
+                "FUNC PULS",
+                "FREQ 20",
+                "FUNC:PULS:HOLD WIDT",
+                "FUNC:PULS:WIDT 2e-05",
+                "FUNC:PULS:TRAN 1e-08",
+                "VOLT:LOW 0.2",
+                "VOLT:HIGH 3.3",
+                "BURS:MODE TRIG",
+                "BURS:NCYC 1",
+                "TRIG:SOUR EXT",
+                "TRIG:SLOP NEG",
+                "BURS:STAT ON",
+                "OUTP ON",
+            ],
+        )
+
+    def test_read_ttl_single_pulse_config_queries_expected_values(self) -> None:
+        resource = FakeVisaResource(
+            responses={
+                "FUNC?": "PULS",
+                "FREQ?": "10",
+                "FUNC:PULS:WIDT?": "1E-5",
+                "FUNC:PULS:TRAN?": "5E-9",
+                "VOLT:HIGH?": "5",
+                "VOLT:LOW?": "0",
+                "OUTP:LOAD?": "INF",
+                "BURS:MODE?": "TRIG",
+                "BURS:NCYC?": "1",
+                "TRIG:SOUR?": "EXT",
+                "TRIG:SLOP?": "POS",
+                "BURS:STAT?": "1",
+                "OUTP?": "1",
+            }
+        )
+        instrument = Keysight33600A(resource=resource)
+
+        self.assertEqual(
+            instrument.read_ttl_single_pulse_config(),
+            {
+                "FUNC?": "PULS",
+                "FREQ?": "10",
+                "FUNC:PULS:WIDT?": "1E-5",
+                "FUNC:PULS:TRAN?": "5E-9",
+                "VOLT:HIGH?": "5",
+                "VOLT:LOW?": "0",
+                "OUTP:LOAD?": "INF",
+                "BURS:MODE?": "TRIG",
+                "BURS:NCYC?": "1",
+                "TRIG:SOUR?": "EXT",
+                "TRIG:SLOP?": "POS",
+                "BURS:STAT?": "1",
+                "OUTP?": "1",
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

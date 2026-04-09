@@ -16,7 +16,7 @@ Python control helpers for the Keysight 33600A with a development workflow that 
 4. Create a virtual environment and install dependencies:
 
 ```powershell
-py -3 -m venv .venv
+python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
@@ -24,7 +24,23 @@ python -m pip install -r requirements.txt
 5. Run the smoke test against the real VISA resource:
 
 ```powershell
-python scripts\windows_smoke_test.py "USB0::0x0957::0x2C07::MY12345678::INSTR"
+python -m scripts.windows_smoke_test "USB0::0x0957::0x2C07::MY12345678::INSTR"
+```
+
+## TTL Single Pulse Example
+
+Configure a single `0 V` to `5 V` pulse on the main output, with `10 Hz` base frequency, `10 us` width, and one pulse per external rising-edge trigger:
+
+```python
+import pyvisa
+
+from agilent_control import Keysight33600A
+
+rm = pyvisa.ResourceManager("@ivi")
+inst = Keysight33600A(rm.open_resource("USB0::0x0957::0x0407::MY44036401::0::INSTR"))
+inst.configure_ttl_single_pulse()
+print(inst.read_ttl_single_pulse_config())
+inst.close()
 ```
 
 ## Notes
