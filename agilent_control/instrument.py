@@ -287,6 +287,11 @@ class Keysight33600A:
     def apply_factory_defaults(self) -> None:
         self.apply_settings(self.factory_defaults)
 
+    def set_pulse_width(self, pulse_width_s: float) -> None:
+        if pulse_width_s <= 0:
+            raise ValueError("pulse_width_s must be positive")
+        self.write(f"FUNC:PULS:WIDT {pulse_width_s:.12g}")
+
     def configure_ttl_single_pulse(
         self,
         frequency_hz: float = 10.0,

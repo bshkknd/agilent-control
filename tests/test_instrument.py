@@ -117,6 +117,14 @@ class Keysight33600ATest(unittest.TestCase):
             ],
         )
 
+    def test_set_pulse_width_writes_width_command(self) -> None:
+        resource = FakeVisaResource()
+        instrument = Keysight33600A(resource=resource)
+
+        instrument.set_pulse_width(25e-6)
+
+        self.assertEqual(resource.writes, ["FUNC:PULS:WIDT 2.5e-05"])
+
     def test_read_ttl_single_pulse_config_queries_expected_values(self) -> None:
         resource = FakeVisaResource(
             responses={

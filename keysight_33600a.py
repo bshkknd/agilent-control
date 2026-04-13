@@ -1,4 +1,5 @@
 from agilent_control.instrument import DEFAULT_SCPI_COMMANDS, DEFAULT_SETTINGS, Keysight33600A
+from agilent_control.sync import PulseSyncConfig, PulseSyncState, PulseWidthSyncService
 
 keysight_33600a = Keysight33600A
 scpi_cmd_dict = DEFAULT_SCPI_COMMANDS
@@ -8,6 +9,9 @@ __all__ = [
     "DEFAULT_SCPI_COMMANDS",
     "DEFAULT_SETTINGS",
     "Keysight33600A",
+    "PulseSyncConfig",
+    "PulseSyncState",
+    "PulseWidthSyncService",
     "keysight_33600a",
     "scpi_cmd_dict",
     "settings_por_scpi_list",
