@@ -15,22 +15,8 @@ def format_hex(data: bytes) -> str:
     return data.hex(" ") if data else "-"
 
 
-def read_crlf_line(sock: socket.socket) -> bytes:
-    chunks: list[bytes] = []
-    while True:
-        chunk = sock.recv(4096)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        if b"\r\n" in b"".join(chunks):
-            break
-    data = b"".join(chunks)
-    if not data:
-        return b""
-    terminator_index = data.find(b"\r\n")
-    if terminator_index == -1:
-        raise ValueError(f"Invalid pulse-width terminator: {data!r}")
-    return data[: terminator_index + 2]
+def read_reply(sock: socket.socket) -> bytes:
+    return sock.recv(4096)
 
 
 def run_probe(host: str, port: int, timeout_s: float) -> int:
@@ -58,12 +44,9 @@ def run_probe(host: str, port: int, timeout_s: float) -> int:
 
         receive_started = time.perf_counter()
         try:
-            response_bytes = read_crlf_line(sock)
+            response_bytes = read_reply(sock)
         except socket.timeout:
             print("Receive: TIMEOUT")
-            return 1
-        except ValueError as exc:
-            print(f"Receive: INVALID ({exc})")
             return 1
         receive_elapsed = time.perf_counter() - receive_started
 

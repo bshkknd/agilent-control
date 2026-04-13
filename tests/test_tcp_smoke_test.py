@@ -21,7 +21,7 @@ class TcpSmokeTestScriptTest(unittest.TestCase):
         class FakeSocket:
             def __init__(self) -> None:
                 self.sent: list[bytes] = []
-                self.responses = [b"VALUE 123\r\n"]
+                self.responses = [b"VALUE 123"]
 
             def __enter__(self) -> "FakeSocket":
                 return self
@@ -45,7 +45,35 @@ class TcpSmokeTestScriptTest(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(fake_socket.sent, [b"GET pulsewidth\r\n"])
-        self.assertIn("Recv bytes: b'VALUE 123\\r\\n'", output)
+        self.assertIn("Recv bytes: b'VALUE 123'", output)
+        self.assertIn("Protocol: OK (VALUE=123)", output)
+
+    def test_crlf_reply_is_still_valid(self) -> None:
+        class FakeSocket:
+            def __init__(self) -> None:
+                self.sent: list[bytes] = []
+                self.responses = [b"VALUE 123\r\n"]
+
+            def __enter__(self) -> "FakeSocket":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+                return None
+
+            def settimeout(self, timeout: float) -> None:
+                self.timeout = timeout
+
+            def sendall(self, data: bytes) -> None:
+                self.sent.append(data)
+
+            def recv(self, _: int) -> bytes:
+                if self.responses:
+                    return self.responses.pop(0)
+                return b""
+
+        result, output = self.run_with_socket(FakeSocket())
+
+        self.assertEqual(result, 0)
         self.assertIn("Protocol: OK (VALUE=123)", output)
 
     def test_timeout_returns_failure(self) -> None:
@@ -92,10 +120,10 @@ class TcpSmokeTestScriptTest(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("Receive: CLOSED_WITHOUT_RESPONSE", output)
 
-    def test_lf_only_response_is_reported_invalid(self) -> None:
+    def test_invalid_response_is_reported_invalid(self) -> None:
         class FakeSocket:
             def __init__(self) -> None:
-                self.responses = [b"VALUE 123\n", b""]
+                self.responses = [b"WIDTH 123"]
 
             def __enter__(self) -> "FakeSocket":
                 return self
@@ -117,7 +145,7 @@ class TcpSmokeTestScriptTest(unittest.TestCase):
         result, output = self.run_with_socket(FakeSocket())
 
         self.assertEqual(result, 1)
-        self.assertIn("Receive: INVALID", output)
+        self.assertIn("Protocol: INVALID", output)
 
 
 if __name__ == "__main__":

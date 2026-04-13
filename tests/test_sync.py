@@ -18,22 +18,24 @@ from agilent_control.transports import FakeVisaResource
 
 class ParsePulseWidthResponseTest(unittest.TestCase):
     def test_accepts_valid_line(self) -> None:
-        self.assertEqual(parse_pulsewidth_response("VALUE 0.010\r\n"), 0.01)
+        self.assertEqual(parse_pulsewidth_response("VALUE 0.010"), 0.01)
 
     def test_accepts_integer_payload(self) -> None:
+        self.assertEqual(parse_pulsewidth_response("VALUE 123"), 123.0)
+
+    def test_accepts_crlf_terminated_payload(self) -> None:
         self.assertEqual(parse_pulsewidth_response("VALUE 123\r\n"), 123.0)
+
+    def test_accepts_trailing_space(self) -> None:
+        self.assertEqual(parse_pulsewidth_response("VALUE 123 "), 123.0)
 
     def test_rejects_invalid_prefix(self) -> None:
         with self.assertRaisesRegex(ValueError, "Invalid pulse-width response"):
             parse_pulsewidth_response("WIDTH 0.010\r\n")
 
-    def test_rejects_lf_only_terminator(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Invalid pulse-width terminator"):
-            parse_pulsewidth_response("VALUE 0.010\n")
-
     def test_rejects_missing_value(self) -> None:
         with self.assertRaisesRegex(ValueError, "missing a numeric payload"):
-            parse_pulsewidth_response("VALUE \r\n")
+            parse_pulsewidth_response("VALUE ")
 
     def test_rejects_non_numeric_value(self) -> None:
         with self.assertRaisesRegex(ValueError, "Invalid pulse-width value"):
@@ -41,7 +43,34 @@ class ParsePulseWidthResponseTest(unittest.TestCase):
 
 
 class TcpPulseWidthClientTest(unittest.TestCase):
-    def test_request_uses_crlf_and_returns_crlf_line(self) -> None:
+    def test_request_uses_crlf_and_returns_plain_payload(self) -> None:
+        class FakeSocket:
+            def __init__(self) -> None:
+                self.sent: list[bytes] = []
+                self.timeout: float | None = None
+
+            def settimeout(self, timeout: float) -> None:
+                self.timeout = timeout
+
+            def sendall(self, data: bytes) -> None:
+                self.sent.append(data)
+
+            def recv(self, _: int) -> bytes:
+                return b"VALUE 123"
+
+            def close(self) -> None:
+                return None
+
+        fake_socket = FakeSocket()
+        client = TcpPulseWidthClient("127.0.0.1", 9000)
+
+        with patch("socket.create_connection", return_value=fake_socket):
+            response = client.request_pulse_width()
+
+        self.assertEqual(fake_socket.sent, [b"GET pulsewidth\r\n"])
+        self.assertEqual(response, "VALUE 123")
+
+    def test_request_accepts_crlf_payload(self) -> None:
         class FakeSocket:
             def __init__(self) -> None:
                 self.sent: list[bytes] = []
@@ -65,7 +94,6 @@ class TcpPulseWidthClientTest(unittest.TestCase):
         with patch("socket.create_connection", return_value=fake_socket):
             response = client.request_pulse_width()
 
-        self.assertEqual(fake_socket.sent, [b"GET pulsewidth\r\n"])
         self.assertEqual(response, "VALUE 123\r\n")
 
 
@@ -108,7 +136,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
         return service, resource, state
 
     def test_startup_applies_full_preset_once(self) -> None:
-        service, resource, state = self.make_service(["VALUE 20.0\r\n"])
+        service, resource, state = self.make_service(["VALUE 20.0"])
 
         service.poll_once(now=1.0)
 
@@ -118,7 +146,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
         self.assertAlmostEqual(state.last_applied_width_s or 0.0, 20e-6)
 
     def test_unchanged_value_does_not_rewrite_width(self) -> None:
-        service, resource, _ = self.make_service(["VALUE 20.0\r\n", "VALUE 20.0\r\n"])
+        service, resource, _ = self.make_service(["VALUE 20.0", "VALUE 20.0"])
 
         service.poll_once(now=1.0)
         first_write_count = len(resource.writes)
@@ -127,7 +155,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
         self.assertEqual(len(resource.writes), first_write_count)
 
     def test_changed_value_updates_width_only(self) -> None:
-        service, resource, _ = self.make_service(["VALUE 20.0\r\n", "VALUE 25.0\r\n"])
+        service, resource, _ = self.make_service(["VALUE 20.0", "VALUE 25.0"])
 
         service.poll_once(now=1.0)
         service.poll_once(now=2.0)
@@ -136,7 +164,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
 
     def test_invalid_width_is_rejected_and_keeps_last_good_value(self) -> None:
         service, resource, state = self.make_service(
-            ["VALUE 20.0\r\n", "VALUE 500.0\r\n"],
+            ["VALUE 20.0", "VALUE 500.0"],
             width_range=PulseWidthRange(minimum_s=10e-9, maximum_s=100e-6),
         )
 
@@ -167,7 +195,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
         self.assertEqual(state.last_error, "server down")
 
     def test_reset_startup_marks_reconfigure_pending(self) -> None:
-        service, _, state = self.make_service(["VALUE 20.0\r\n"])
+        service, _, state = self.make_service(["VALUE 20.0"])
 
         service.reset_startup()
 
@@ -175,7 +203,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
         self.assertTrue(state.pending_reconfigure)
 
     def test_successful_poll_clears_reconfigure_and_polling_flags(self) -> None:
-        service, _, state = self.make_service(["VALUE 20.0\r\n"])
+        service, _, state = self.make_service(["VALUE 20.0"])
         service.reset_startup()
 
         service.poll_once(now=1.0)
@@ -185,7 +213,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
         self.assertTrue(state.sync_active)
 
     def test_pause_skips_polling(self) -> None:
-        service, resource, state = self.make_service(["VALUE 20.0\r\n"])
+        service, resource, state = self.make_service(["VALUE 20.0"])
         state.paused = True
 
         service.poll_once(now=1.0)
