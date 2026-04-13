@@ -11,7 +11,9 @@ VALID_SOURCE_UNITS: tuple[SourceUnit, ...] = ("ns", "us", "ms")
 
 
 def parse_pulsewidth_response(response: str) -> float:
-    line = response.rstrip("\r\n")
+    if not response.endswith("\r\n"):
+        raise ValueError(f"Invalid pulse-width terminator: {response!r}")
+    line = response[:-2]
     prefix = "VALUE "
     if not line.startswith(prefix):
         raise ValueError(f"Invalid pulse-width response: {response!r}")
@@ -104,7 +106,7 @@ class TcpPulseWidthClient:
     def request_pulse_width(self) -> str:
         sock = self._ensure_connected()
         try:
-            sock.sendall(b"GET pulsewidth\n")
+            sock.sendall(b"GET pulsewidth\r\n")
             response = self._read_line(sock)
         except OSError:
             self.close()
@@ -121,12 +123,15 @@ class TcpPulseWidthClient:
             if not chunk:
                 break
             chunks.append(chunk)
-            if b"\n" in chunk:
+            if b"\r\n" in b"".join(chunks):
                 break
         data = b"".join(chunks)
         if not data:
             return ""
-        line = data.splitlines()[0]
+        terminator_index = data.find(b"\r\n")
+        if terminator_index == -1:
+            raise ValueError(f"Invalid pulse-width terminator: {data!r}")
+        line = data[: terminator_index + 2]
         return line.decode("utf-8", "strict")
 
 

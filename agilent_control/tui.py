@@ -142,11 +142,9 @@ class AwgPulseSyncTui:
             self.instrument = Keysight33600A(resource)
             self.state.awg_connected = True
             self.state.last_error = None
-            self._mark_changed("awg_connected", "error")
         except Exception as exc:
             self.state.awg_connected = False
             self.state.last_error = f"AWG connection failed: {exc}"
-            self._mark_changed("awg_connected", "error")
             return
         self._build_service()
 
@@ -155,7 +153,6 @@ class AwgPulseSyncTui:
             self.tcp_client.close()
         self.tcp_client = TcpPulseWidthClient(self.config.tcp_host, self.config.tcp_port)
         self.state.tcp_connected = False
-        self._mark_changed("tcp_connected")
         self._build_service()
 
     def _build_service(self) -> None:
@@ -233,7 +230,6 @@ class AwgPulseSyncTui:
             self._set_config_field(field_name, caster(new_value))
         except Exception as exc:
             self.state.last_error = f"Input error: {exc}"
-            self._mark_changed("error")
         finally:
             live.start()
 
@@ -249,12 +245,12 @@ class AwgPulseSyncTui:
         table = Table.grid(padding=(0, 2))
         table.add_column(style="cyan")
         table.add_column()
-        table.add_row("AWG", self._styled_value("awg_connected", "connected" if self.state.awg_connected else "disconnected"))
-        table.add_row("TCP", self._styled_value("tcp_connected", "connected" if self.state.tcp_connected else "disconnected"))
-        table.add_row("Sync", self._styled_value("sync_status", self._sync_status_text()))
-        table.add_row("Last poll", self._styled_value("last_poll_started_at", self._format_elapsed(self.state.last_poll_started_at)))
-        table.add_row("Last success", self._styled_value("last_success_at", self._format_elapsed(self.state.last_success_at)))
-        table.add_row("Error", self._styled_value("error", self.state.last_error or "-"))
+        table.add_row("AWG", "connected" if self.state.awg_connected else "disconnected")
+        table.add_row("TCP", "connected" if self.state.tcp_connected else "disconnected")
+        table.add_row("Sync", self._sync_status_text())
+        table.add_row("Last poll", self._format_elapsed(self.state.last_poll_started_at))
+        table.add_row("Last success", self._format_elapsed(self.state.last_success_at))
+        table.add_row("Error", self.state.last_error or "-")
         return Panel(table, title="Status", border_style="green")
 
     def _render_value_panel(self) -> Panel:
@@ -321,7 +317,6 @@ class AwgPulseSyncTui:
         self.state.last_error = None
         if paused:
             self.state.sync_active = False
-        self._mark_changed("sync_status", "error")
         self._request_immediate_poll()
 
     def _cycle_source_unit(self) -> None:
@@ -349,7 +344,6 @@ class AwgPulseSyncTui:
         else:
             self.state.pending_reconfigure = True
             self.state.sync_active = False
-        self._mark_changed("sync_status")
         self._request_immediate_poll()
 
     def _request_immediate_poll(self) -> None:
@@ -358,16 +352,10 @@ class AwgPulseSyncTui:
 
     def _state_snapshot(self) -> dict[str, object]:
         return {
-            "awg_connected": self.state.awg_connected,
-            "tcp_connected": self.state.tcp_connected,
-            "sync_status": self._sync_status_text(),
-            "error": self.state.last_error,
             "last_response": self.state.last_response,
             "last_server_value": self.state.last_server_value,
             "last_width_s": self.state.last_width_s,
             "last_applied_width_s": self.state.last_applied_width_s,
-            "last_poll_started_at": self.state.last_poll_started_at,
-            "last_success_at": self.state.last_success_at,
         }
 
     def _mark_state_changes(self, before: dict[str, object]) -> None:

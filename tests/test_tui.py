@@ -47,7 +47,7 @@ class AwgPulseSyncTuiTest(unittest.TestCase):
 
         self.assertTrue(app.state.paused)
         self.assertEqual(app._sync_status_text(), "paused")
-        self.assertTrue(app._is_highlighted("sync_status"))
+        self.assertFalse(app._is_highlighted("sync_status"))
 
 
 if __name__ == "__main__":

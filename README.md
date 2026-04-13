@@ -34,7 +34,7 @@ python -m scripts.windows_smoke_test "USB0::0x0957::0x2C07::MY12345678::INSTR"
 python -m agilent_control.tui "USB0::0x0957::0x0407::MY44036401::0::INSTR" 192.168.1.20 9000 --source-unit us
 ```
 
-The TUI polls the TCP server by sending `GET pulsewidth`, expects a single-line response like `VALUE 0.010`, converts the value using the selected source unit (`ns`, `us`, or `ms`), applies the full TTL pulse preset once, and then updates only the pulse width when the server value changes.
+The TUI polls the TCP server by sending `GET pulsewidth\r\n`, expects a single-line response like `VALUE 0.010\r\n`, converts the value using the selected source unit (`ns`, `us`, or `ms`), applies the full TTL pulse preset once, and then updates only the pulse width when the server value changes.
 
 ## TTL Single Pulse Example
 
