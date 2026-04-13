@@ -1,6 +1,6 @@
 # agilent-control
 
-Python control helpers for the Keysight 33600A with a development workflow that supports macOS coding and Windows hardware validation.
+Python control helpers for the Keysight 33600A with a development workflow that supports local development and Windows hardware validation.
 
 ## Layout
 
@@ -13,7 +13,7 @@ Python control helpers for the Keysight 33600A with a development workflow that 
 
 ## Recommended workflow
 
-1. Edit and run unit tests on the MacBook.
+1. Edit and run unit tests locally.
 2. Push changes to git.
 3. Pull on the Windows test PC that has the actual VISA stack and instrument attached.
 4. Create a virtual environment and install dependencies:
