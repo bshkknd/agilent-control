@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import socket
 from dataclasses import dataclass, field
-from typing import Callable, Literal
+from pathlib import Path
+from typing import Any, Callable, Literal
 
 from .instrument import Keysight33600A
 
@@ -37,14 +39,21 @@ def convert_pulse_width_to_seconds(value: float, source_unit: SourceUnit) -> flo
 @dataclass(slots=True)
 class PulseWidthRange:
     minimum_s: float = 10e-9
-    maximum_s: float = 100e-6
+    maximum_s: float = 1000e-6
 
     def validate(self, pulse_width_s: float) -> None:
+        self.validate_bounds()
         if pulse_width_s < self.minimum_s or pulse_width_s > self.maximum_s:
             raise ValueError(
                 "pulse width must stay within "
                 f"{self.minimum_s:.12g}s and {self.maximum_s:.12g}s"
             )
+
+    def validate_bounds(self) -> None:
+        if self.minimum_s <= 0:
+            raise ValueError("width_range.minimum_s must be positive")
+        if self.maximum_s <= self.minimum_s:
+            raise ValueError("width_range.maximum_s must be greater than minimum_s")
 
 
 @dataclass(slots=True)
@@ -61,6 +70,23 @@ class PulseSyncConfig:
     trigger_slope: str = "POS"
     reset_on_start: bool = True
     width_range: PulseWidthRange = field(default_factory=PulseWidthRange)
+
+    def validate(self) -> None:
+        self.width_range.validate_bounds()
+        if self.poll_interval_s <= 0:
+            raise ValueError("poll_interval_s must be positive")
+        if self.frequency_hz <= 0:
+            raise ValueError("frequency_hz must be positive")
+        if self.edge_time_s <= 0:
+            raise ValueError("edge_time_s must be positive")
+        if self.high_level_v <= self.low_level_v:
+            raise ValueError("high_level_v must be greater than low_level_v")
+        if self.tcp_port < 0 or self.tcp_port > 65535:
+            raise ValueError("tcp_port must be between 0 and 65535")
+        if self.trigger_slope.upper() not in {"POS", "NEG"}:
+            raise ValueError("trigger_slope must be 'POS' or 'NEG'")
+        if self.source_unit not in VALID_SOURCE_UNITS:
+            raise ValueError(f"source_unit must be one of {VALID_SOURCE_UNITS!r}")
 
 
 @dataclass(slots=True)
@@ -79,6 +105,67 @@ class PulseSyncState:
     last_error: str | None = None
     last_poll_started_at: float | None = None
     last_success_at: float | None = None
+
+
+def pulse_sync_config_to_dict(config: PulseSyncConfig) -> dict[str, Any]:
+    return {
+        "visa_resource": config.visa_resource,
+        "tcp_host": config.tcp_host,
+        "tcp_port": config.tcp_port,
+        "poll_interval_s": config.poll_interval_s,
+        "source_unit": config.source_unit,
+        "frequency_hz": config.frequency_hz,
+        "high_level_v": config.high_level_v,
+        "low_level_v": config.low_level_v,
+        "edge_time_s": config.edge_time_s,
+        "trigger_slope": config.trigger_slope,
+        "reset_on_start": config.reset_on_start,
+        "width_range": {
+            "minimum_s": config.width_range.minimum_s,
+            "maximum_s": config.width_range.maximum_s,
+        },
+    }
+
+
+def pulse_sync_config_from_dict(
+    data: dict[str, Any], base: PulseSyncConfig | None = None
+) -> PulseSyncConfig:
+    default_config = base or PulseSyncConfig(visa_resource="", tcp_host="", tcp_port=0)
+    width_range_data = data.get("width_range", {})
+    if not isinstance(width_range_data, dict):
+        raise ValueError("Config field 'width_range' must be an object")
+    config = PulseSyncConfig(
+        visa_resource=str(data.get("visa_resource", default_config.visa_resource)),
+        tcp_host=str(data.get("tcp_host", default_config.tcp_host)),
+        tcp_port=int(data.get("tcp_port", default_config.tcp_port)),
+        poll_interval_s=float(data.get("poll_interval_s", default_config.poll_interval_s)),
+        source_unit=str(data.get("source_unit", default_config.source_unit)),
+        frequency_hz=float(data.get("frequency_hz", default_config.frequency_hz)),
+        high_level_v=float(data.get("high_level_v", default_config.high_level_v)),
+        low_level_v=float(data.get("low_level_v", default_config.low_level_v)),
+        edge_time_s=float(data.get("edge_time_s", default_config.edge_time_s)),
+        trigger_slope=str(data.get("trigger_slope", default_config.trigger_slope)),
+        reset_on_start=bool(data.get("reset_on_start", default_config.reset_on_start)),
+        width_range=PulseWidthRange(
+            minimum_s=float(width_range_data.get("minimum_s", default_config.width_range.minimum_s)),
+            maximum_s=float(width_range_data.get("maximum_s", default_config.width_range.maximum_s)),
+        ),
+    )
+    config.validate()
+    return config
+
+
+def load_pulse_sync_config(path: Path, base: PulseSyncConfig | None = None) -> PulseSyncConfig:
+    with path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("Config file must contain a JSON object")
+    return pulse_sync_config_from_dict(data, base=base)
+
+
+def save_pulse_sync_config(path: Path, config: PulseSyncConfig) -> None:
+    config.validate()
+    path.write_text(json.dumps(pulse_sync_config_to_dict(config), indent=2) + "\n", encoding="utf-8")
 
 
 class TcpPulseWidthClient:

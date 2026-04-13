@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from agilent_control.instrument import Keysight33600A
@@ -11,7 +14,9 @@ from agilent_control.sync import (
     PulseWidthRange,
     TcpPulseWidthClient,
     convert_pulse_width_to_seconds,
+    load_pulse_sync_config,
     parse_pulsewidth_response,
+    save_pulse_sync_config,
 )
 from agilent_control.transports import FakeVisaResource
 
@@ -31,7 +36,7 @@ class ParsePulseWidthResponseTest(unittest.TestCase):
 
     def test_rejects_invalid_prefix(self) -> None:
         with self.assertRaisesRegex(ValueError, "Invalid pulse-width response"):
-            parse_pulsewidth_response("WIDTH 0.010\r\n")
+            parse_pulsewidth_response("WIDTH 0.010")
 
     def test_rejects_missing_value(self) -> None:
         with self.assertRaisesRegex(ValueError, "missing a numeric payload"):
@@ -39,7 +44,7 @@ class ParsePulseWidthResponseTest(unittest.TestCase):
 
     def test_rejects_non_numeric_value(self) -> None:
         with self.assertRaisesRegex(ValueError, "Invalid pulse-width value"):
-            parse_pulsewidth_response("VALUE abc\r\n")
+            parse_pulsewidth_response("VALUE abc")
 
 
 class TcpPulseWidthClientTest(unittest.TestCase):
@@ -108,6 +113,46 @@ class ConvertPulseWidthToSecondsTest(unittest.TestCase):
         self.assertAlmostEqual(convert_pulse_width_to_seconds(10, "ms"), 10e-3)
 
 
+class PulseSyncConfigPersistenceTest(unittest.TestCase):
+    def test_default_maximum_width_is_1000_us(self) -> None:
+        config = PulseSyncConfig(visa_resource="USB0::TEST", tcp_host="127.0.0.1", tcp_port=9000)
+        self.assertAlmostEqual(config.width_range.maximum_s, 1000e-6)
+
+    def test_save_and_load_config_round_trip(self) -> None:
+        config = PulseSyncConfig(
+            visa_resource="USB0::TEST",
+            tcp_host="127.0.0.1",
+            tcp_port=9000,
+            width_range=PulseWidthRange(minimum_s=20e-9, maximum_s=1000e-6),
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "awg_tui_config.json"
+            save_pulse_sync_config(path, config)
+            loaded = load_pulse_sync_config(path)
+
+        self.assertEqual(loaded.visa_resource, "USB0::TEST")
+        self.assertEqual(loaded.tcp_host, "127.0.0.1")
+        self.assertEqual(loaded.tcp_port, 9000)
+        self.assertAlmostEqual(loaded.width_range.maximum_s, 1000e-6)
+
+    def test_load_rejects_invalid_json_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "awg_tui_config.json"
+            path.write_text(json.dumps(["bad"]), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "JSON object"):
+                load_pulse_sync_config(path)
+
+    def test_validate_rejects_invalid_width_range(self) -> None:
+        config = PulseSyncConfig(
+            visa_resource="USB0::TEST",
+            tcp_host="127.0.0.1",
+            tcp_port=9000,
+            width_range=PulseWidthRange(minimum_s=1e-3, maximum_s=1e-4),
+        )
+        with self.assertRaisesRegex(ValueError, "maximum_s must be greater"):
+            config.validate()
+
+
 class PulseWidthSyncServiceTest(unittest.TestCase):
     def make_service(
         self,
@@ -164,8 +209,8 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
 
     def test_invalid_width_is_rejected_and_keeps_last_good_value(self) -> None:
         service, resource, state = self.make_service(
-            ["VALUE 20.0", "VALUE 500.0"],
-            width_range=PulseWidthRange(minimum_s=10e-9, maximum_s=100e-6),
+            ["VALUE 20.0", "VALUE 5000.0"],
+            width_range=PulseWidthRange(minimum_s=10e-9, maximum_s=1000e-6),
         )
 
         service.poll_once(now=1.0)
