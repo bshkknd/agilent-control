@@ -6,6 +6,7 @@ Python control helpers for the Keysight 33600A with a development workflow that 
 
 - `agilent_control/`: instrument logic and transport helpers
 - `agilent_control/tui.py`: Rich-based live operator TUI for TCP-to-AWG pulse-width sync
+- `scripts/simple_tcp_client.py`: minimal raw `connect/send/recv` probe matching the known-good snippet
 - `scripts/tcp_smoke_test.py`: one-shot raw TCP protocol diagnostic for the lab server
 - `scripts/windows_smoke_test.py`: minimal real-device validation script for Windows
 - `tests/`: unit tests that run without VISA drivers or hardware
@@ -44,6 +45,14 @@ python -m scripts.tcp_smoke_test 192.168.1.20 9000 --timeout 2
 ```
 
 It connects once, sends the exact production request bytes, prints the raw sent/received bytes, and reports whether the reply matches the expected `VALUE <number>\r\n` protocol.
+
+If you want the smallest possible probe that matches the manual working snippet, run:
+
+```powershell
+python -m scripts.simple_tcp_client 192.168.1.20 9000 --timeout 0.1
+```
+
+This script does exactly one `recv(1024)` after sending `GET pulsewidth\r\n` and prints the raw decoded reply without applying the stricter CRLF/protocol validation used by `tcp_smoke_test.py`.
 
 ## TTL Single Pulse Example
 
