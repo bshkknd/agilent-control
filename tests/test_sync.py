@@ -128,6 +128,24 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
         self.assertFalse(state.tcp_connected)
         self.assertEqual(state.last_error, "server down")
 
+    def test_reset_startup_marks_reconfigure_pending(self) -> None:
+        service, _, state = self.make_service(["VALUE 20.0"])
+
+        service.reset_startup()
+
+        self.assertFalse(state.sync_active)
+        self.assertTrue(state.pending_reconfigure)
+
+    def test_successful_poll_clears_reconfigure_and_polling_flags(self) -> None:
+        service, _, state = self.make_service(["VALUE 20.0"])
+        service.reset_startup()
+
+        service.poll_once(now=1.0)
+
+        self.assertFalse(state.poll_in_progress)
+        self.assertFalse(state.pending_reconfigure)
+        self.assertTrue(state.sync_active)
+
     def test_pause_skips_polling(self) -> None:
         service, resource, state = self.make_service(["VALUE 20.0"])
         state.paused = True
@@ -135,6 +153,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
         service.poll_once(now=1.0)
 
         self.assertFalse(state.sync_active)
+        self.assertFalse(state.poll_in_progress)
         self.assertEqual(resource.writes, [])
 
 

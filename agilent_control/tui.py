@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
 import time
 from dataclasses import asdict
 from typing import Any
@@ -63,6 +64,8 @@ class KeyReader:
 
 
 class AwgPulseSyncTui:
+    HIGHLIGHT_TTL_S = 1.5
+
     def __init__(self, config: PulseSyncConfig) -> None:
         self.config = config
         self.console = Console()
@@ -72,21 +75,24 @@ class AwgPulseSyncTui:
         self.service: PulseWidthSyncService | None = None
         self.should_exit = False
         self.next_poll_at = 0.0
+        self._poll_wake_event = threading.Event()
+        self._poll_stop_event = threading.Event()
+        self._poll_thread: threading.Thread | None = None
+        self._highlighted_fields: dict[str, float] = {}
+        self._highlight_lock = threading.Lock()
 
     def run(self) -> int:
-        with Live(self.render(), console=self.console, refresh_per_second=8, screen=True) as live:
+        with Live(self.render(), console=self.console, refresh_per_second=12, screen=True) as live:
             with KeyReader() as reader:
                 self._connect_awg()
                 self._ensure_tcp_client()
                 self.next_poll_at = time.monotonic()
+                self._start_poll_worker()
                 while not self.should_exit:
                     self._handle_key(reader.read_key(), live)
-                    now = time.monotonic()
-                    if now >= self.next_poll_at:
-                        self._poll(now)
-                        self.next_poll_at = now + self.config.poll_interval_s
                     live.update(self.render())
-                    time.sleep(0.05)
+                    time.sleep(0.02)
+        self._stop_poll_worker()
         self.close()
         return 0
 
@@ -95,6 +101,37 @@ class AwgPulseSyncTui:
             self.tcp_client.close()
         if self.instrument is not None:
             self.instrument.close()
+
+    def _start_poll_worker(self) -> None:
+        if self._poll_thread is not None and self._poll_thread.is_alive():
+            return
+        self._poll_stop_event.clear()
+        self._poll_wake_event.set()
+        self._poll_thread = threading.Thread(target=self._poll_worker, daemon=True)
+        self._poll_thread.start()
+
+    def _stop_poll_worker(self) -> None:
+        self._poll_stop_event.set()
+        self._poll_wake_event.set()
+        if self._poll_thread is not None:
+            self._poll_thread.join(timeout=2.5)
+            self._poll_thread = None
+
+    def _poll_worker(self) -> None:
+        while not self._poll_stop_event.is_set():
+            if self.service is None:
+                self._poll_wake_event.wait(0.1)
+                self._poll_wake_event.clear()
+                continue
+
+            wait_time = max(0.0, self.next_poll_at - time.monotonic())
+            woke_early = self._poll_wake_event.wait(wait_time)
+            self._poll_wake_event.clear()
+            if self._poll_stop_event.is_set():
+                break
+            if woke_early and time.monotonic() < self.next_poll_at and not self.state.pending_reconfigure:
+                continue
+            self._poll(time.monotonic())
 
     def _connect_awg(self) -> None:
         if self.instrument is not None:
@@ -105,9 +142,11 @@ class AwgPulseSyncTui:
             self.instrument = Keysight33600A(resource)
             self.state.awg_connected = True
             self.state.last_error = None
+            self._mark_changed("awg_connected", "error")
         except Exception as exc:
             self.state.awg_connected = False
             self.state.last_error = f"AWG connection failed: {exc}"
+            self._mark_changed("awg_connected", "error")
             return
         self._build_service()
 
@@ -115,6 +154,8 @@ class AwgPulseSyncTui:
         if self.tcp_client is not None:
             self.tcp_client.close()
         self.tcp_client = TcpPulseWidthClient(self.config.tcp_host, self.config.tcp_port)
+        self.state.tcp_connected = False
+        self._mark_changed("tcp_connected")
         self._build_service()
 
     def _build_service(self) -> None:
@@ -135,7 +176,10 @@ class AwgPulseSyncTui:
             self._ensure_tcp_client()
         if self.service is None:
             return
+        before = self._state_snapshot()
         self.service.poll_once(now)
+        self.next_poll_at = time.monotonic() + self.config.poll_interval_s
+        self._mark_state_changes(before)
 
     def _handle_key(self, key: str | None, live: Live) -> None:
         if key is None:
@@ -144,26 +188,25 @@ class AwgPulseSyncTui:
             self.should_exit = True
             return
         if key == " ":
-            self.state.paused = not self.state.paused
-            self.state.last_error = None
+            self._set_paused(not self.state.paused)
             return
         if key.lower() == "r":
             self._connect_awg()
             self._ensure_tcp_client()
+            self._request_immediate_poll()
             return
         if key.lower() == "u":
-            current_index = VALID_SOURCE_UNITS.index(self.config.source_unit)
-            self.config.source_unit = VALID_SOURCE_UNITS[(current_index + 1) % len(VALID_SOURCE_UNITS)]
-            if self.service is not None:
-                self.service.reset_startup()
+            self._cycle_source_unit()
             return
         if key.lower() == "t":
             self.config.trigger_slope = "NEG" if self.config.trigger_slope == "POS" else "POS"
-            if self.service is not None:
-                self.service.reset_startup()
+            self._mark_changed("trigger_slope")
+            self._request_reconfigure()
             return
         if key.lower() == "x":
             self.config.reset_on_start = not self.config.reset_on_start
+            self._mark_changed("reset_on_start")
+            self._request_reconfigure()
             return
 
         prompts: dict[str, tuple[str, str, type[Any]]] = {
@@ -187,15 +230,10 @@ class AwgPulseSyncTui:
             new_value = input().strip()
             if not new_value:
                 return
-            setattr(self.config, field_name, caster(new_value))
-            if field_name in {"tcp_host", "tcp_port"}:
-                self._ensure_tcp_client()
-            elif field_name == "visa_resource":
-                self._connect_awg()
-            elif self.service is not None:
-                self.service.reset_startup()
+            self._set_config_field(field_name, caster(new_value))
         except Exception as exc:
             self.state.last_error = f"Input error: {exc}"
+            self._mark_changed("error")
         finally:
             live.start()
 
@@ -211,25 +249,28 @@ class AwgPulseSyncTui:
         table = Table.grid(padding=(0, 2))
         table.add_column(style="cyan")
         table.add_column()
-        table.add_row("AWG", "connected" if self.state.awg_connected else "disconnected")
-        table.add_row("TCP", "connected" if self.state.tcp_connected else "disconnected")
-        table.add_row("Sync", "paused" if self.state.paused else ("active" if self.state.sync_active else "idle"))
-        table.add_row("Last poll", self._format_time(self.state.last_poll_started_at))
-        table.add_row("Last success", self._format_time(self.state.last_success_at))
-        table.add_row("Error", self.state.last_error or "-")
+        table.add_row("AWG", self._styled_value("awg_connected", "connected" if self.state.awg_connected else "disconnected"))
+        table.add_row("TCP", self._styled_value("tcp_connected", "connected" if self.state.tcp_connected else "disconnected"))
+        table.add_row("Sync", self._styled_value("sync_status", self._sync_status_text()))
+        table.add_row("Last poll", self._styled_value("last_poll_started_at", self._format_elapsed(self.state.last_poll_started_at)))
+        table.add_row("Last success", self._styled_value("last_success_at", self._format_elapsed(self.state.last_success_at)))
+        table.add_row("Error", self._styled_value("error", self.state.last_error or "-"))
         return Panel(table, title="Status", border_style="green")
 
     def _render_value_panel(self) -> Panel:
         table = Table.grid(padding=(0, 2))
         table.add_column(style="cyan")
         table.add_column()
-        table.add_row("Raw response", self.state.last_response or "-")
+        table.add_row("Raw response", self._styled_value("last_response", self.state.last_response or "-"))
         table.add_row(
             "Server value",
-            "-" if self.state.last_server_value is None else f"{self.state.last_server_value:.12g} {self.config.source_unit}",
+            self._styled_value(
+                "last_server_value",
+                "-" if self.state.last_server_value is None else f"{self.state.last_server_value:.12g} {self.config.source_unit}",
+            ),
         )
-        table.add_row("Converted width", self._format_width(self.state.last_width_s))
-        table.add_row("Applied width", self._format_width(self.state.last_applied_width_s))
+        table.add_row("Converted width", self._styled_value("last_width_s", self._format_width(self.state.last_width_s)))
+        table.add_row("Applied width", self._styled_value("last_applied_width_s", self._format_width(self.state.last_applied_width_s)))
         return Panel(table, title="Pulse Width", border_style="blue")
 
     def _render_config_panel(self) -> Panel:
@@ -239,7 +280,7 @@ class AwgPulseSyncTui:
         entries = asdict(self.config)
         width_range = entries.pop("width_range")
         for key, value in entries.items():
-            table.add_row(key, str(value))
+            table.add_row(key, self._styled_value(key, str(value)))
         table.add_row("width_min_s", str(width_range["minimum_s"]))
         table.add_row("width_max_s", str(width_range["maximum_s"]))
         return Panel(table, title="Configuration", border_style="yellow")
@@ -262,10 +303,106 @@ class AwgPulseSyncTui:
         text.append(" quit")
         return Panel(text, title="Keys", border_style="magenta")
 
-    def _format_time(self, timestamp: float | None) -> str:
+    def _sync_status_text(self) -> str:
+        if self.state.paused:
+            return "paused"
+        if self.state.poll_in_progress:
+            return "polling"
+        if self.state.pending_reconfigure:
+            return "reconfig pending"
+        if self.state.last_error and not self.state.sync_active:
+            return "error"
+        if self.state.sync_active:
+            return "active"
+        return "idle"
+
+    def _set_paused(self, paused: bool) -> None:
+        self.state.paused = paused
+        self.state.last_error = None
+        if paused:
+            self.state.sync_active = False
+        self._mark_changed("sync_status", "error")
+        self._request_immediate_poll()
+
+    def _cycle_source_unit(self) -> None:
+        current_index = VALID_SOURCE_UNITS.index(self.config.source_unit)
+        self.config.source_unit = VALID_SOURCE_UNITS[(current_index + 1) % len(VALID_SOURCE_UNITS)]
+        self._mark_changed("source_unit")
+        self._request_reconfigure()
+
+    def _set_config_field(self, field_name: str, value: Any) -> None:
+        setattr(self.config, field_name, value)
+        self._mark_changed(field_name)
+        if field_name in {"tcp_host", "tcp_port"}:
+            self._ensure_tcp_client()
+            self._request_immediate_poll()
+            return
+        if field_name == "visa_resource":
+            self._connect_awg()
+            self._request_immediate_poll()
+            return
+        self._request_reconfigure()
+
+    def _request_reconfigure(self) -> None:
+        if self.service is not None:
+            self.service.reset_startup()
+        else:
+            self.state.pending_reconfigure = True
+            self.state.sync_active = False
+        self._mark_changed("sync_status")
+        self._request_immediate_poll()
+
+    def _request_immediate_poll(self) -> None:
+        self.next_poll_at = time.monotonic()
+        self._poll_wake_event.set()
+
+    def _state_snapshot(self) -> dict[str, object]:
+        return {
+            "awg_connected": self.state.awg_connected,
+            "tcp_connected": self.state.tcp_connected,
+            "sync_status": self._sync_status_text(),
+            "error": self.state.last_error,
+            "last_response": self.state.last_response,
+            "last_server_value": self.state.last_server_value,
+            "last_width_s": self.state.last_width_s,
+            "last_applied_width_s": self.state.last_applied_width_s,
+            "last_poll_started_at": self.state.last_poll_started_at,
+            "last_success_at": self.state.last_success_at,
+        }
+
+    def _mark_state_changes(self, before: dict[str, object]) -> None:
+        after = self._state_snapshot()
+        for field_name, value in after.items():
+            if before.get(field_name) != value:
+                self._mark_changed(field_name)
+
+    def _mark_changed(self, *field_names: str, at: float | None = None) -> None:
+        when = time.monotonic() if at is None else at
+        with self._highlight_lock:
+            for field_name in field_names:
+                self._highlighted_fields[field_name] = when
+
+    def _is_highlighted(self, field_name: str, now: float | None = None) -> bool:
+        when = time.monotonic() if now is None else now
+        with self._highlight_lock:
+            changed_at = self._highlighted_fields.get(field_name)
+            if changed_at is None:
+                return False
+            if when - changed_at > self.HIGHLIGHT_TTL_S:
+                self._highlighted_fields.pop(field_name, None)
+                return False
+            return True
+
+    def _styled_value(self, field_name: str, value: str) -> Text:
+        if self._is_highlighted(field_name):
+            return Text(str(value), style="bold black on bright_yellow")
+        return Text(str(value))
+
+    def _format_elapsed(self, timestamp: float | None) -> str:
         if timestamp is None:
             return "-"
-        return time.strftime("%H:%M:%S", time.localtime())
+        elapsed_s = max(0.0, time.monotonic() - timestamp)
+        return f"{elapsed_s:.1f}s ago"
 
     def _format_width(self, pulse_width_s: float | None) -> str:
         if pulse_width_s is None:

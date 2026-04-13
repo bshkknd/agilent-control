@@ -69,6 +69,8 @@ class PulseSyncState:
     awg_connected: bool = False
     sync_active: bool = False
     paused: bool = False
+    poll_in_progress: bool = False
+    pending_reconfigure: bool = False
     startup_applied: bool = False
     last_response: str | None = None
     last_server_value: float | None = None
@@ -145,14 +147,17 @@ class PulseWidthSyncService:
     def reset_startup(self) -> None:
         self.state.startup_applied = False
         self.state.sync_active = False
+        self.state.pending_reconfigure = True
 
     def poll_once(self, now: float) -> PulseSyncState:
         self.state.last_poll_started_at = now
         if self.state.paused:
             self.state.sync_active = False
             self.state.last_error = None
+            self.state.poll_in_progress = False
             return self.state
 
+        self.state.poll_in_progress = True
         try:
             response = self.fetch_response()
             self.state.tcp_connected = True
@@ -181,6 +186,7 @@ class PulseWidthSyncService:
                 self.state.last_applied_width_s = pulse_width_s
 
             self.state.sync_active = True
+            self.state.pending_reconfigure = False
             self.state.last_error = None
             self.state.last_success_at = now
         except Exception as exc:
@@ -188,4 +194,6 @@ class PulseWidthSyncService:
             self.state.last_error = str(exc)
             if isinstance(exc, OSError | ConnectionError):
                 self.state.tcp_connected = False
+        finally:
+            self.state.poll_in_progress = False
         return self.state
