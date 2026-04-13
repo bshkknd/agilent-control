@@ -6,6 +6,7 @@ Python control helpers for the Keysight 33600A with a development workflow that 
 
 - `agilent_control/`: instrument logic and transport helpers
 - `agilent_control/tui.py`: Rich-based live operator TUI for TCP-to-AWG pulse-width sync
+- `scripts/tcp_smoke_test.py`: one-shot raw TCP protocol diagnostic for the lab server
 - `scripts/windows_smoke_test.py`: minimal real-device validation script for Windows
 - `tests/`: unit tests that run without VISA drivers or hardware
 
@@ -35,6 +36,14 @@ python -m agilent_control.tui "USB0::0x0957::0x0407::MY44036401::0::INSTR" 192.1
 ```
 
 The TUI polls the TCP server by sending `GET pulsewidth\r\n`, expects a single-line response like `VALUE 0.010\r\n`, converts the value using the selected source unit (`ns`, `us`, or `ms`), applies the full TTL pulse preset once, and then updates only the pulse width when the server value changes.
+
+If TCP exchange is suspicious, run the raw protocol smoke test first:
+
+```powershell
+python -m scripts.tcp_smoke_test 192.168.1.20 9000 --timeout 2
+```
+
+It connects once, sends the exact production request bytes, prints the raw sent/received bytes, and reports whether the reply matches the expected `VALUE <number>\r\n` protocol.
 
 ## TTL Single Pulse Example
 
