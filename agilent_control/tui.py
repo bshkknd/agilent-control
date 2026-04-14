@@ -361,7 +361,7 @@ class AwgPulseSyncTui:
 
     def _render_resource_picker_panel(self) -> Panel:
         if not self.resource_picker_active:
-            return Panel(Text("Select the AWG VISA resource from config mode with Enter."), title="VISA Picker", border_style="dim")
+            return Panel(Text(""), title="VISA Picker", border_style="dim")
 
         table = Table.grid(padding=(0, 2))
         table.add_column()
