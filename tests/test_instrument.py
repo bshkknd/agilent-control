@@ -68,6 +68,7 @@ class Keysight33600ATest(unittest.TestCase):
                 "*RST",
                 "OUTP:LOAD INF",
                 "FUNC PULS",
+                "DISPlay:UNIT:PULSe WIDTh",
                 "FREQ 10",
                 "FUNC:PULS:HOLD WIDT",
                 "FUNC:PULS:WIDT 1e-05",
@@ -102,6 +103,7 @@ class Keysight33600ATest(unittest.TestCase):
             [
                 "OUTP:LOAD INF",
                 "FUNC PULS",
+                "DISPlay:UNIT:PULSe WIDTh",
                 "FREQ 20",
                 "FUNC:PULS:HOLD WIDT",
                 "FUNC:PULS:WIDT 2e-05",

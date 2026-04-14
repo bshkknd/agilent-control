@@ -321,6 +321,7 @@ class Keysight33600A:
             [
                 "OUTP:LOAD INF",
                 "FUNC PULS",
+                "DISPlay:UNIT:PULSe WIDTh",
                 f"FREQ {frequency_hz:.12g}",
                 "FUNC:PULS:HOLD WIDT",
                 f"FUNC:PULS:WIDT {pulse_width_s:.12g}",
