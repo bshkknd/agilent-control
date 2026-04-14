@@ -6,7 +6,7 @@ from .sync import (
     load_pulse_sync_config,
     save_pulse_sync_config,
 )
-from .transports import FakeVisaResource, open_pyvisa_resource
+from .transports import FakeVisaResource, list_pyvisa_resources, open_pyvisa_resource
 
 __all__ = [
     "FakeVisaResource",
@@ -15,6 +15,7 @@ __all__ = [
     "PulseSyncState",
     "PulseWidthSyncService",
     "load_pulse_sync_config",
+    "list_pyvisa_resources",
     "open_pyvisa_resource",
     "save_pulse_sync_config",
 ]

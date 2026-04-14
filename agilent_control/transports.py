@@ -3,6 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+def list_pyvisa_resources() -> tuple[str, ...]:
+    try:
+        import pyvisa
+    except ImportError as exc:
+        raise RuntimeError(
+            "pyvisa is required on the target machine. Install project dependencies first."
+        ) from exc
+
+    manager = pyvisa.ResourceManager()
+    return tuple(str(resource) for resource in manager.list_resources())
+
+
 def open_pyvisa_resource(resource_name: str, timeout_ms: int = 5000):
     try:
         import pyvisa

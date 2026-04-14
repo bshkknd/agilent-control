@@ -15,7 +15,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from . import Keysight33600A, open_pyvisa_resource
+from . import Keysight33600A, list_pyvisa_resources, open_pyvisa_resource
 from .sync import (
     PulseSyncConfig,
     PulseSyncState,
@@ -136,6 +136,9 @@ class AwgPulseSyncTui:
         self._poll_thread: threading.Thread | None = None
         self._highlighted_fields: dict[str, float] = {}
         self._highlight_lock = threading.Lock()
+        self.resource_picker_active = False
+        self.resource_picker_index = 0
+        self.resource_picker_items: list[str] = []
 
     def run(self) -> int:
         self._connect_awg()
@@ -260,9 +263,13 @@ class AwgPulseSyncTui:
             self._request_immediate_poll()
             return
         if key == "c":
+            self.resource_picker_active = False
             self.config_mode = not self.config_mode
             return
         if not self.config_mode:
+            return
+        if self.resource_picker_active:
+            self._handle_resource_picker_key(key)
             return
         if key == "ESC":
             self.config_mode = False
@@ -284,6 +291,7 @@ class AwgPulseSyncTui:
             self._render_status_panel(),
             self._render_value_panel(),
             self._render_config_panel(),
+            self._render_resource_picker_panel(),
             self._render_help_panel(),
         )
 
@@ -348,8 +356,26 @@ class AwgPulseSyncTui:
         text.append("enter", style="bold")
         text.append(" edit  ")
         text.append("esc", style="bold")
-        text.append(" exit config")
+        text.append(" exit config/picker")
         return Panel(text, title="Keys", border_style="magenta")
+
+    def _render_resource_picker_panel(self) -> Panel:
+        if not self.resource_picker_active:
+            return Panel(Text("Select the AWG VISA resource from config mode with Enter."), title="VISA Picker", border_style="dim")
+
+        table = Table.grid(padding=(0, 2))
+        table.add_column()
+        if not self.resource_picker_items:
+            table.add_row("No VISA resources discovered")
+        else:
+            for index, item in enumerate(self.resource_picker_items):
+                value = Text(item)
+                if index == self.resource_picker_index:
+                    value.stylize("bold white on dark_blue")
+                    table.add_row(f"> {value.plain}", value)
+                else:
+                    table.add_row(" ", value)
+        return Panel(table, title="VISA Picker", border_style="cyan")
 
     def _sync_status_text(self) -> str:
         if self.state.paused:
@@ -405,6 +431,9 @@ class AwgPulseSyncTui:
 
     def _edit_selected_field(self, live: Live) -> None:
         field = CONFIG_FIELDS[self.config_index]
+        if field.key == "visa_resource":
+            self._open_resource_picker()
+            return
         if field.value_type in {"choice", "bool"}:
             return
         live.stop()
@@ -513,6 +542,34 @@ class AwgPulseSyncTui:
         if pulse_width_s is None:
             return "-"
         return f"{pulse_width_s:.12g} s / {pulse_width_s * 1e6:.12g} us"
+
+    def _open_resource_picker(self) -> None:
+        try:
+            self.resource_picker_items = list(list_pyvisa_resources())
+            self.resource_picker_index = 0
+            self.resource_picker_active = True
+            if not self.resource_picker_items:
+                self.state.last_error = "No VISA resources found"
+        except Exception as exc:
+            self.resource_picker_items = []
+            self.resource_picker_active = False
+            self.state.last_error = f"VISA discovery failed: {exc}"
+
+    def _handle_resource_picker_key(self, key: str) -> None:
+        if key == "ESC":
+            self.resource_picker_active = False
+            return
+        if not self.resource_picker_items:
+            return
+        if key == "UP":
+            self.resource_picker_index = (self.resource_picker_index - 1) % len(self.resource_picker_items)
+            return
+        if key == "DOWN":
+            self.resource_picker_index = (self.resource_picker_index + 1) % len(self.resource_picker_items)
+            return
+        if key == "ENTER":
+            self._apply_config_change(CONFIG_FIELDS[self.config_index], self.resource_picker_items[self.resource_picker_index])
+            self.resource_picker_active = False
 
 
 def build_parser() -> argparse.ArgumentParser:

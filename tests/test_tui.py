@@ -75,6 +75,42 @@ class AwgPulseSyncTuiTest(unittest.TestCase):
             self.assertTrue(path.exists())
             self.assertEqual(app.config.tcp_port, 9001)
 
+    def test_open_resource_picker_populates_items(self) -> None:
+        app = self.make_app()
+
+        from unittest.mock import patch
+
+        with patch("agilent_control.tui.list_pyvisa_resources", return_value=("USB0::A", "TCPIP0::B")):
+            app._open_resource_picker()
+
+        self.assertTrue(app.resource_picker_active)
+        self.assertEqual(app.resource_picker_items, ["USB0::A", "TCPIP0::B"])
+
+    def test_resource_picker_selection_updates_config(self) -> None:
+        app = self.make_app()
+        app.config_index = 0
+        app.resource_picker_active = True
+        app.resource_picker_items = ["USB0::A", "USB0::B"]
+        app.resource_picker_index = 1
+
+        app._handle_resource_picker_key("ENTER")
+
+        self.assertFalse(app.resource_picker_active)
+        self.assertEqual(app.config.visa_resource, "USB0::B")
+
+    def test_resource_picker_cancel_keeps_value(self) -> None:
+        app = self.make_app()
+        app.config_index = 0
+        app.resource_picker_active = True
+        app.resource_picker_items = ["USB0::A"]
+        app.resource_picker_index = 0
+        original = app.config.visa_resource
+
+        app._handle_resource_picker_key("ESC")
+
+        self.assertFalse(app.resource_picker_active)
+        self.assertEqual(app.config.visa_resource, original)
+
 
 if __name__ == "__main__":
     unittest.main()
