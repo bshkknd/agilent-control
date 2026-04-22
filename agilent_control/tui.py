@@ -407,13 +407,12 @@ class AwgPulseSyncTui:
         table = Table.grid(padding=(0, 2))
         table.add_column(style="cyan")
         table.add_column()
-        table.add_row(self._connection_leds())
         table.add_row("Sync", self._sync_status_text())
         table.add_row("Last success", self._format_elapsed(self.state.last_success_at))
         table.add_row("Error", self.state.last_error or "-")
         if self.config_mode or self._has_config_error():
             table.add_row("Config file", str(self.config_path))
-        return Panel(table, title="Status", border_style="green")
+        return Panel(Group(self._connection_leds(), table), title="Status", border_style="green")
 
     def _render_value_panel(self) -> Panel:
         table = Table.grid(padding=(0, 2))
@@ -461,16 +460,22 @@ class AwgPulseSyncTui:
 
     def _render_config_panel(self) -> Panel:
         group = CONFIG_GROUPS[self.config_group_index]
-        table = Table.grid(padding=(0, 2))
-        table.add_column(style="cyan")
+        label_width = max(len(field.label) for field in group.fields)
+        table = Table.grid(padding=(0, 1))
+        table.add_column(width=1, no_wrap=True)
+        table.add_column(style="cyan", width=label_width, no_wrap=True)
         table.add_column()
         for index, field in enumerate(group.fields):
-            label = field.label
+            marker = Text(">")
+            label_text = Text(field.label)
             value_text = Text(self._display_config_value(field.key))
             if index == self.config_field_index:
-                label = f"> {label}"
+                marker.stylize("bold white on dark_green")
+                label_text.stylize("bold white on dark_green")
                 value_text.stylize("bold white on dark_green")
-            table.add_row(label, value_text)
+            else:
+                marker = Text(" ")
+            table.add_row(marker, label_text, value_text)
         title = f"Config: {group.label} [{self.config_group_index + 1}/{len(CONFIG_GROUPS)}]"
         return Panel(table, title=title, border_style="yellow")
 

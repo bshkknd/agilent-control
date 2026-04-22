@@ -241,6 +241,7 @@ class AwgPulseSyncTuiTest(unittest.TestCase):
 
         output = self.render_text(app)
         status_line = next(line for line in output.splitlines() if "AWG" in line and "TCP" in line)
+        sync_line = next(line for line in output.splitlines() if "Sync" in line)
 
         self.assertIn("●", status_line)
         self.assertIn("AWG", status_line)
@@ -248,6 +249,24 @@ class AwgPulseSyncTuiTest(unittest.TestCase):
         self.assertIn("TCP", status_line)
         self.assertIn("connected", status_line)
         self.assertIn("disabled", status_line)
+        self.assertNotIn("AWG", sync_line)
+        self.assertLess(sync_line.index("Sync"), status_line.index("TCP"))
+
+    def test_config_value_column_does_not_shift_when_selection_moves(self) -> None:
+        app = self.make_app()
+        app.config_mode = True
+        self.select_config_field(app, "tcp_host")
+
+        before = self.render_text(app)
+        port_line_before = next(line for line in before.splitlines() if "Port" in line and "9000" in line)
+
+        app._handle_key("DOWN", Mock())
+
+        after = self.render_text(app)
+        port_line_after = next(line for line in after.splitlines() if "Port" in line and "9000" in line)
+
+        self.assertEqual(port_line_before.index("9000"), port_line_after.index("9000"))
+        self.assertIn(">", port_line_after)
 
     def test_config_help_shows_tab_group_navigation(self) -> None:
         app = self.make_app()
