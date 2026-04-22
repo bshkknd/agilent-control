@@ -8,14 +8,18 @@ from unittest.mock import patch
 
 from agilent_control.instrument import Keysight33600A
 from agilent_control.sync import (
+    FrequencyRange,
     PulseSyncConfig,
     PulseSyncState,
     PulseWidthSyncService,
     PulseWidthRange,
+    RfGeneratorConfig,
     TcpPulseWidthClient,
+    convert_frequency_to_hz,
     convert_pulse_width_to_seconds,
     load_pulse_sync_config,
     parse_pulsewidth_response,
+    parse_rffrequency_response,
     save_pulse_sync_config,
 )
 from agilent_control.transports import FakeVisaResource
@@ -45,6 +49,15 @@ class ParsePulseWidthResponseTest(unittest.TestCase):
     def test_rejects_non_numeric_value(self) -> None:
         with self.assertRaisesRegex(ValueError, "Invalid pulse-width value"):
             parse_pulsewidth_response("VALUE abc")
+
+
+class ParseRfFrequencyResponseTest(unittest.TestCase):
+    def test_accepts_valid_line(self) -> None:
+        self.assertEqual(parse_rffrequency_response("VALUE 12.5"), 12.5)
+
+    def test_rejects_invalid_prefix(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Invalid RF frequency response"):
+            parse_rffrequency_response("FREQ 12.5")
 
 
 class TcpPulseWidthClientTest(unittest.TestCase):
@@ -101,6 +114,32 @@ class TcpPulseWidthClientTest(unittest.TestCase):
 
         self.assertEqual(response, "VALUE 123\r\n")
 
+    def test_request_rf_frequency_uses_expected_command(self) -> None:
+        class FakeSocket:
+            def __init__(self) -> None:
+                self.sent: list[bytes] = []
+
+            def settimeout(self, _: float) -> None:
+                return None
+
+            def sendall(self, data: bytes) -> None:
+                self.sent.append(data)
+
+            def recv(self, _: int) -> bytes:
+                return b"VALUE 1000000"
+
+            def close(self) -> None:
+                return None
+
+        fake_socket = FakeSocket()
+        client = TcpPulseWidthClient("127.0.0.1", 9000)
+
+        with patch("socket.create_connection", return_value=fake_socket):
+            response = client.request_rf_frequency()
+
+        self.assertEqual(fake_socket.sent, [b"GET rffrequency\r\n"])
+        self.assertEqual(response, "VALUE 1000000")
+
 
 class ConvertPulseWidthToSecondsTest(unittest.TestCase):
     def test_supports_ns(self) -> None:
@@ -111,6 +150,17 @@ class ConvertPulseWidthToSecondsTest(unittest.TestCase):
 
     def test_supports_ms(self) -> None:
         self.assertAlmostEqual(convert_pulse_width_to_seconds(10, "ms"), 10e-3)
+
+
+class ConvertFrequencyToHzTest(unittest.TestCase):
+    def test_supports_hz(self) -> None:
+        self.assertAlmostEqual(convert_frequency_to_hz(10, "Hz"), 10)
+
+    def test_supports_khz(self) -> None:
+        self.assertAlmostEqual(convert_frequency_to_hz(10, "kHz"), 10e3)
+
+    def test_supports_mhz(self) -> None:
+        self.assertAlmostEqual(convert_frequency_to_hz(10, "MHz"), 10e6)
 
 
 class PulseSyncConfigPersistenceTest(unittest.TestCase):
@@ -124,6 +174,13 @@ class PulseSyncConfigPersistenceTest(unittest.TestCase):
             tcp_host="127.0.0.1",
             tcp_port=9000,
             width_range=PulseWidthRange(minimum_s=20e-9, maximum_s=1000e-6),
+            rf=RfGeneratorConfig(
+                enabled=True,
+                visa_resource="USB0::RF",
+                amplitude_vpp=0.25,
+                source_unit="MHz",
+                frequency_range=FrequencyRange(minimum_hz=1e6, maximum_hz=10e6),
+            ),
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "awg_tui_config.json"
@@ -134,6 +191,11 @@ class PulseSyncConfigPersistenceTest(unittest.TestCase):
         self.assertEqual(loaded.tcp_host, "127.0.0.1")
         self.assertEqual(loaded.tcp_port, 9000)
         self.assertAlmostEqual(loaded.width_range.maximum_s, 1000e-6)
+        self.assertTrue(loaded.rf.enabled)
+        self.assertEqual(loaded.rf.visa_resource, "USB0::RF")
+        self.assertAlmostEqual(loaded.rf.amplitude_vpp, 0.25)
+        self.assertEqual(loaded.rf.source_unit, "MHz")
+        self.assertAlmostEqual(loaded.rf.frequency_range.maximum_hz, 10e6)
 
     def test_load_rejects_invalid_json_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -150,6 +212,16 @@ class PulseSyncConfigPersistenceTest(unittest.TestCase):
             width_range=PulseWidthRange(minimum_s=1e-3, maximum_s=1e-4),
         )
         with self.assertRaisesRegex(ValueError, "maximum_s must be greater"):
+            config.validate()
+
+    def test_validate_rejects_enabled_rf_without_resource(self) -> None:
+        config = PulseSyncConfig(
+            visa_resource="USB0::TEST",
+            tcp_host="127.0.0.1",
+            tcp_port=9000,
+            rf=RfGeneratorConfig(enabled=True),
+        )
+        with self.assertRaisesRegex(ValueError, "rf.visa_resource"):
             config.validate()
 
 
@@ -266,6 +338,108 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
         self.assertFalse(state.sync_active)
         self.assertFalse(state.poll_in_progress)
         self.assertEqual(resource.writes, [])
+
+    def test_enabled_rf_configures_sine_output_on_startup(self) -> None:
+        pulse_resource = FakeVisaResource()
+        rf_resource = FakeVisaResource()
+        pulse_instrument = Keysight33600A(resource=pulse_resource)
+        rf_instrument = Keysight33600A(resource=rf_resource)
+        config = PulseSyncConfig(
+            visa_resource="USB0::TEST",
+            tcp_host="127.0.0.1",
+            tcp_port=9000,
+            rf=RfGeneratorConfig(
+                enabled=True,
+                visa_resource="USB0::RF",
+                amplitude_vpp=0.2,
+                source_unit="MHz",
+                frequency_range=FrequencyRange(minimum_hz=1e6, maximum_hz=10e6),
+            ),
+        )
+        service = PulseWidthSyncService(
+            instrument=pulse_instrument,
+            config=config,
+            fetch_response=lambda: "VALUE 20.0",
+            rf_instrument=rf_instrument,
+            fetch_rf_response=lambda: "VALUE 2.5",
+            state=PulseSyncState(),
+        )
+
+        state = service.poll_once(now=1.0)
+
+        self.assertEqual(
+            rf_resource.writes,
+            [
+                "FUNC SIN",
+                "FREQ 2500000",
+                "VOLT 0.2",
+                "VOLT:OFFS 0",
+                "OUTP:LOAD 50",
+                "OUTP ON",
+            ],
+        )
+        self.assertAlmostEqual(state.last_applied_rf_frequency_hz or 0.0, 2.5e6)
+
+    def test_enabled_rf_changed_value_updates_frequency_only(self) -> None:
+        pulse_resource = FakeVisaResource()
+        rf_resource = FakeVisaResource()
+        config = PulseSyncConfig(
+            visa_resource="USB0::TEST",
+            tcp_host="127.0.0.1",
+            tcp_port=9000,
+            rf=RfGeneratorConfig(
+                enabled=True,
+                visa_resource="USB0::RF",
+                amplitude_vpp=0.2,
+                source_unit="MHz",
+                frequency_range=FrequencyRange(minimum_hz=1e6, maximum_hz=10e6),
+            ),
+        )
+        rf_responses = iter(["VALUE 2.5", "VALUE 3.0"])
+        service = PulseWidthSyncService(
+            instrument=Keysight33600A(resource=pulse_resource),
+            config=config,
+            fetch_response=lambda: "VALUE 20.0",
+            rf_instrument=Keysight33600A(resource=rf_resource),
+            fetch_rf_response=lambda: next(rf_responses),
+            state=PulseSyncState(),
+        )
+
+        service.poll_once(now=1.0)
+        service.poll_once(now=2.0)
+
+        self.assertEqual(rf_resource.writes[-1], "FREQ 3000000")
+
+    def test_rf_frequency_outside_safe_range_is_rejected(self) -> None:
+        pulse_resource = FakeVisaResource()
+        rf_resource = FakeVisaResource()
+        config = PulseSyncConfig(
+            visa_resource="USB0::TEST",
+            tcp_host="127.0.0.1",
+            tcp_port=9000,
+            rf=RfGeneratorConfig(
+                enabled=True,
+                visa_resource="USB0::RF",
+                source_unit="MHz",
+                frequency_range=FrequencyRange(minimum_hz=1e6, maximum_hz=10e6),
+            ),
+        )
+        rf_responses = iter(["VALUE 2.5", "VALUE 20.0"])
+        service = PulseWidthSyncService(
+            instrument=Keysight33600A(resource=pulse_resource),
+            config=config,
+            fetch_response=lambda: "VALUE 20.0",
+            rf_instrument=Keysight33600A(resource=rf_resource),
+            fetch_rf_response=lambda: next(rf_responses),
+            state=PulseSyncState(),
+        )
+
+        service.poll_once(now=1.0)
+        first_write_count = len(rf_resource.writes)
+        state = service.poll_once(now=2.0)
+
+        self.assertEqual(len(rf_resource.writes), first_write_count)
+        self.assertIn("RF frequency must stay within", state.last_error or "")
 
 
 if __name__ == "__main__":

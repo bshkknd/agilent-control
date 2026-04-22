@@ -62,6 +62,16 @@ class AwgPulseSyncTuiTest(unittest.TestCase):
         self.assertTrue(app.state.pending_reconfigure)
         self.assertTrue(app._is_highlighted("source_unit"))
 
+    def test_cycle_rf_frequency_unit_marks_field_and_requests_reconfigure(self) -> None:
+        app = self.make_app()
+        app.config_index = next(index for index, field in enumerate(CONFIG_FIELDS) if field.key == "rf.source_unit")
+
+        app._adjust_selected_field(direction=1)
+
+        self.assertEqual(app.config.rf.source_unit, "kHz")
+        self.assertTrue(app.state.pending_reconfigure)
+        self.assertTrue(app._is_highlighted("rf.source_unit"))
+
     def test_apply_config_change_persists_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "awg_tui_config.json"
@@ -97,6 +107,18 @@ class AwgPulseSyncTuiTest(unittest.TestCase):
 
         self.assertFalse(app.resource_picker_active)
         self.assertEqual(app.config.visa_resource, "USB0::B")
+
+    def test_resource_picker_selection_updates_rf_config(self) -> None:
+        app = self.make_app()
+        app.config_index = next(index for index, field in enumerate(CONFIG_FIELDS) if field.key == "rf.visa_resource")
+        app.resource_picker_active = True
+        app.resource_picker_items = ["USB0::A", "USB0::RF"]
+        app.resource_picker_index = 1
+
+        app._handle_resource_picker_key("ENTER")
+
+        self.assertFalse(app.resource_picker_active)
+        self.assertEqual(app.config.rf.visa_resource, "USB0::RF")
 
     def test_resource_picker_cancel_keeps_value(self) -> None:
         app = self.make_app()

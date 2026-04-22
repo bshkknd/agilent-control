@@ -292,6 +292,44 @@ class Keysight33600A:
             raise ValueError("pulse_width_s must be positive")
         self.write(f"FUNC:PULS:WIDT {pulse_width_s:.12g}")
 
+    def set_sine_frequency(self, frequency_hz: float) -> None:
+        if frequency_hz <= 0:
+            raise ValueError("frequency_hz must be positive")
+        self.write(f"FREQ {frequency_hz:.12g}")
+
+    def configure_sine_output(
+        self,
+        frequency_hz: float,
+        amplitude_vpp: float,
+        offset_v: float = 0.0,
+        load_ohm: float | None = 50.0,
+        reset: bool = False,
+    ) -> None:
+        if frequency_hz <= 0:
+            raise ValueError("frequency_hz must be positive")
+        if amplitude_vpp <= 0:
+            raise ValueError("amplitude_vpp must be positive")
+        if load_ohm is not None and load_ohm <= 0:
+            raise ValueError("load_ohm must be positive")
+
+        commands = []
+        if reset:
+            commands.append("*RST")
+        commands.extend(
+            [
+                "FUNC SIN",
+                f"FREQ {frequency_hz:.12g}",
+                f"VOLT {amplitude_vpp:.12g}",
+                f"VOLT:OFFS {offset_v:.12g}",
+            ]
+        )
+        if load_ohm is None:
+            commands.append("OUTP:LOAD INF")
+        else:
+            commands.append(f"OUTP:LOAD {load_ohm:.12g}")
+        commands.append("OUTP ON")
+        self.apply_settings(commands)
+
     def configure_ttl_single_pulse(
         self,
         frequency_hz: float = 10.0,

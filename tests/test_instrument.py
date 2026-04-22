@@ -127,6 +127,32 @@ class Keysight33600ATest(unittest.TestCase):
 
         self.assertEqual(resource.writes, ["FUNC:PULS:WIDT 2.5e-05"])
 
+    def test_configure_sine_output_writes_expected_sequence(self) -> None:
+        resource = FakeVisaResource()
+        instrument = Keysight33600A(resource=resource)
+
+        instrument.configure_sine_output(frequency_hz=1.5e6, amplitude_vpp=0.2)
+
+        self.assertEqual(
+            resource.writes,
+            [
+                "FUNC SIN",
+                "FREQ 1500000",
+                "VOLT 0.2",
+                "VOLT:OFFS 0",
+                "OUTP:LOAD 50",
+                "OUTP ON",
+            ],
+        )
+
+    def test_set_sine_frequency_writes_frequency_command(self) -> None:
+        resource = FakeVisaResource()
+        instrument = Keysight33600A(resource=resource)
+
+        instrument.set_sine_frequency(2.5e6)
+
+        self.assertEqual(resource.writes, ["FREQ 2500000"])
+
     def test_read_ttl_single_pulse_config_queries_expected_values(self) -> None:
         resource = FakeVisaResource(
             responses={

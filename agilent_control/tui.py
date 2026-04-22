@@ -21,6 +21,7 @@ from .sync import (
     PulseSyncState,
     PulseWidthSyncService,
     TcpPulseWidthClient,
+    VALID_FREQUENCY_UNITS,
     VALID_SOURCE_UNITS,
     load_pulse_sync_config,
     save_pulse_sync_config,
@@ -51,6 +52,12 @@ CONFIG_FIELDS: tuple[ConfigField, ...] = (
     ConfigField("reset_on_start", "Reset on start", "bool"),
     ConfigField("width_range.minimum_s", "Width min seconds", "float", reconfigure=False),
     ConfigField("width_range.maximum_s", "Width max seconds", "float", reconfigure=False),
+    ConfigField("rf.enabled", "RF generator enabled", "bool"),
+    ConfigField("rf.visa_resource", "RF VISA resource", "text", reconfigure=False),
+    ConfigField("rf.amplitude_vpp", "RF amplitude Vpp", "float"),
+    ConfigField("rf.source_unit", "RF frequency unit", "choice"),
+    ConfigField("rf.frequency_range.minimum_hz", "RF frequency min Hz", "float", reconfigure=False),
+    ConfigField("rf.frequency_range.maximum_hz", "RF frequency max Hz", "float", reconfigure=False),
 )
 
 
@@ -125,6 +132,7 @@ class AwgPulseSyncTui:
         self.console = Console()
         self.state = PulseSyncState()
         self.instrument: Keysight33600A | None = None
+        self.rf_instrument: Keysight33600A | None = None
         self.tcp_client: TcpPulseWidthClient | None = None
         self.service: PulseWidthSyncService | None = None
         self.should_exit = False
@@ -142,6 +150,7 @@ class AwgPulseSyncTui:
 
     def run(self) -> int:
         self._connect_awg()
+        self._connect_rf()
         self._ensure_tcp_client()
         self.next_poll_at = time.monotonic()
         with Live(self.render(), console=self.console, refresh_per_second=12, screen=True) as live:
@@ -160,6 +169,8 @@ class AwgPulseSyncTui:
             self.tcp_client.close()
         if self.instrument is not None:
             self.instrument.close()
+        if self.rf_instrument is not None:
+            self.rf_instrument.close()
 
     def _start_poll_worker(self) -> None:
         if self._poll_thread is not None and self._poll_thread.is_alive():
@@ -199,6 +210,7 @@ class AwgPulseSyncTui:
         if not self.config.visa_resource:
             self.state.awg_connected = False
             self.state.last_error = "Missing AWG VISA resource"
+            self._build_service()
             return
         try:
             resource = open_pyvisa_resource(self.config.visa_resource)
@@ -208,6 +220,33 @@ class AwgPulseSyncTui:
         except Exception as exc:
             self.state.awg_connected = False
             self.state.last_error = f"AWG connection failed: {exc}"
+            self._build_service()
+            return
+        self._build_service()
+
+    def _connect_rf(self) -> None:
+        if self.rf_instrument is not None:
+            self.rf_instrument.close()
+            self.rf_instrument = None
+        if not self.config.rf.enabled:
+            self.state.rf_connected = False
+            self.state.last_applied_rf_frequency_hz = None
+            self._build_service()
+            return
+        if not self.config.rf.visa_resource:
+            self.state.rf_connected = False
+            self.state.last_error = "Missing RF VISA resource"
+            self._build_service()
+            return
+        try:
+            resource = open_pyvisa_resource(self.config.rf.visa_resource)
+            self.rf_instrument = Keysight33600A(resource)
+            self.state.rf_connected = True
+            self.state.last_error = None
+        except Exception as exc:
+            self.state.rf_connected = False
+            self.state.last_error = f"RF connection failed: {exc}"
+            self._build_service()
             return
         self._build_service()
 
@@ -233,6 +272,8 @@ class AwgPulseSyncTui:
             instrument=self.instrument,
             config=self.config,
             fetch_response=self.tcp_client.request_pulse_width,
+            rf_instrument=self.rf_instrument,
+            fetch_rf_response=self.tcp_client.request_rf_frequency,
             state=self.state,
         )
         self.service.reset_startup()
@@ -259,6 +300,7 @@ class AwgPulseSyncTui:
             return
         if key == "r":
             self._connect_awg()
+            self._connect_rf()
             self._ensure_tcp_client()
             self._request_immediate_poll()
             return
@@ -290,6 +332,7 @@ class AwgPulseSyncTui:
         return Group(
             self._render_status_panel(),
             self._render_value_panel(),
+            self._render_rf_panel(),
             self._render_config_panel(),
             self._render_resource_picker_panel(),
             self._render_help_panel(),
@@ -300,6 +343,7 @@ class AwgPulseSyncTui:
         table.add_column(style="cyan")
         table.add_column()
         table.add_row("AWG", "connected" if self.state.awg_connected else "disconnected")
+        table.add_row("RF", self._rf_status_text())
         table.add_row("TCP", "connected" if self.state.tcp_connected else "disconnected")
         table.add_row("Sync", self._sync_status_text())
         table.add_row("Mode", "config" if self.config_mode else "normal")
@@ -324,6 +368,34 @@ class AwgPulseSyncTui:
         table.add_row("Converted width", self._styled_value("last_width_s", self._format_width(self.state.last_width_s)))
         table.add_row("Applied width", self._styled_value("last_applied_width_s", self._format_width(self.state.last_applied_width_s)))
         return Panel(table, title="Pulse Width", border_style="blue")
+
+    def _render_rf_panel(self) -> Panel:
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="cyan")
+        table.add_column()
+        table.add_row("Enabled", "yes" if self.config.rf.enabled else "no")
+        table.add_row("Raw response", self._styled_value("last_rf_response", self.state.last_rf_response or "-"))
+        table.add_row(
+            "Server value",
+            self._styled_value(
+                "last_rf_server_value",
+                "-"
+                if self.state.last_rf_server_value is None
+                else f"{self.state.last_rf_server_value:.12g} {self.config.rf.source_unit}",
+            ),
+        )
+        table.add_row(
+            "Converted frequency",
+            self._styled_value("last_rf_frequency_hz", self._format_frequency(self.state.last_rf_frequency_hz)),
+        )
+        table.add_row(
+            "Applied frequency",
+            self._styled_value(
+                "last_applied_rf_frequency_hz",
+                self._format_frequency(self.state.last_applied_rf_frequency_hz),
+            ),
+        )
+        return Panel(table, title="RF Generator", border_style="cyan")
 
     def _render_config_panel(self) -> Panel:
         table = Table.grid(padding=(0, 2))
@@ -390,6 +462,11 @@ class AwgPulseSyncTui:
             return "active"
         return "idle"
 
+    def _rf_status_text(self) -> str:
+        if not self.config.rf.enabled:
+            return "disabled"
+        return "connected" if self.state.rf_connected else "disconnected"
+
     def _set_paused(self, paused: bool) -> None:
         self.state.paused = paused
         self.state.last_error = None
@@ -401,17 +478,17 @@ class AwgPulseSyncTui:
         return str(self._get_config_value(key))
 
     def _get_config_value(self, key: str) -> Any:
-        if "." not in key:
-            return getattr(self.config, key)
-        head, tail = key.split(".", 1)
-        return getattr(getattr(self.config, head), tail)
+        value: Any = self.config
+        for part in key.split("."):
+            value = getattr(value, part)
+        return value
 
     def _set_config_value(self, key: str, value: Any) -> None:
-        if "." not in key:
-            setattr(self.config, key, value)
-            return
-        head, tail = key.split(".", 1)
-        setattr(getattr(self.config, head), tail, value)
+        parts = key.split(".")
+        target: Any = self.config
+        for part in parts[:-1]:
+            target = getattr(target, part)
+        setattr(target, parts[-1], value)
 
     def _adjust_selected_field(self, direction: int) -> None:
         field = CONFIG_FIELDS[self.config_index]
@@ -419,11 +496,14 @@ class AwgPulseSyncTui:
         if field.key == "source_unit":
             index = VALID_SOURCE_UNITS.index(current)
             new_value = VALID_SOURCE_UNITS[(index + direction) % len(VALID_SOURCE_UNITS)]
+        elif field.key == "rf.source_unit":
+            index = VALID_FREQUENCY_UNITS.index(current)
+            new_value = VALID_FREQUENCY_UNITS[(index + direction) % len(VALID_FREQUENCY_UNITS)]
         elif field.key == "trigger_slope":
             choices = ("POS", "NEG")
             index = choices.index(str(current).upper())
             new_value = choices[(index + direction) % len(choices)]
-        elif field.key == "reset_on_start":
+        elif field.key in {"reset_on_start", "rf.enabled"}:
             new_value = not bool(current)
         else:
             return
@@ -431,7 +511,7 @@ class AwgPulseSyncTui:
 
     def _edit_selected_field(self, live: Live) -> None:
         field = CONFIG_FIELDS[self.config_index]
-        if field.key == "visa_resource":
+        if field.key in {"visa_resource", "rf.visa_resource"}:
             self._open_resource_picker()
             return
         if field.value_type in {"choice", "bool"}:
@@ -478,6 +558,10 @@ class AwgPulseSyncTui:
             self._connect_awg()
             self._request_immediate_poll()
             return
+        if field.key in {"rf.enabled", "rf.visa_resource"}:
+            self._connect_rf()
+            self._request_reconfigure()
+            return
         if field.reconfigure:
             self._request_reconfigure()
 
@@ -502,6 +586,10 @@ class AwgPulseSyncTui:
             "last_server_value": self.state.last_server_value,
             "last_width_s": self.state.last_width_s,
             "last_applied_width_s": self.state.last_applied_width_s,
+            "last_rf_response": self.state.last_rf_response,
+            "last_rf_server_value": self.state.last_rf_server_value,
+            "last_rf_frequency_hz": self.state.last_rf_frequency_hz,
+            "last_applied_rf_frequency_hz": self.state.last_applied_rf_frequency_hz,
         }
 
     def _mark_state_changes(self, before: dict[str, object]) -> None:
@@ -542,6 +630,11 @@ class AwgPulseSyncTui:
         if pulse_width_s is None:
             return "-"
         return f"{pulse_width_s:.12g} s / {pulse_width_s * 1e6:.12g} us"
+
+    def _format_frequency(self, frequency_hz: float | None) -> str:
+        if frequency_hz is None:
+            return "-"
+        return f"{frequency_hz:.12g} Hz / {frequency_hz / 1e6:.12g} MHz"
 
     def _open_resource_picker(self) -> None:
         try:
@@ -599,6 +692,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip *RST when applying the initial TTL pulse preset",
     )
+    parser.add_argument("--rf-enable", action="store_true", help="Enable the second RF function generator")
+    parser.add_argument("--rf-visa-resource", default=None, help="VISA resource string for the RF generator")
+    parser.add_argument("--rf-amplitude", type=float, default=None, help="RF sine amplitude in Vpp")
+    parser.add_argument(
+        "--rf-source-unit",
+        choices=VALID_FREQUENCY_UNITS,
+        default=None,
+        help="Unit used by the RF frequency value returned from the TCP server",
+    )
+    parser.add_argument("--rf-min-frequency", type=float, default=None, help="Minimum safe RF frequency in Hz")
+    parser.add_argument("--rf-max-frequency", type=float, default=None, help="Maximum safe RF frequency in Hz")
     return parser
 
 
@@ -629,6 +733,18 @@ def main(argv: list[str] | None = None) -> int:
             setattr(config, key, value)
     if args.no_reset_on_start:
         config.reset_on_start = False
+    if args.rf_enable:
+        config.rf.enabled = True
+    if args.rf_visa_resource is not None:
+        config.rf.visa_resource = args.rf_visa_resource
+    if args.rf_amplitude is not None:
+        config.rf.amplitude_vpp = args.rf_amplitude
+    if args.rf_source_unit is not None:
+        config.rf.source_unit = args.rf_source_unit
+    if args.rf_min_frequency is not None:
+        config.rf.frequency_range.minimum_hz = args.rf_min_frequency
+    if args.rf_max_frequency is not None:
+        config.rf.frequency_range.maximum_hz = args.rf_max_frequency
     config.validate()
     app = AwgPulseSyncTui(config, config_path=config_path)
     return app.run()

@@ -10,20 +10,30 @@ from .instrument import Keysight33600A
 
 SourceUnit = Literal["ns", "us", "ms"]
 VALID_SOURCE_UNITS: tuple[SourceUnit, ...] = ("ns", "us", "ms")
+FrequencyUnit = Literal["Hz", "kHz", "MHz"]
+VALID_FREQUENCY_UNITS: tuple[FrequencyUnit, ...] = ("Hz", "kHz", "MHz")
 
 
-def parse_pulsewidth_response(response: str) -> float:
+def parse_value_response(response: str, label: str = "value") -> float:
     line = response.strip("\r\n")
     prefix = "VALUE "
     if not line.startswith(prefix):
-        raise ValueError(f"Invalid pulse-width response: {response!r}")
+        raise ValueError(f"Invalid {label} response: {response!r}")
     value = line[len(prefix) :].strip()
     if not value:
-        raise ValueError("Pulse-width response is missing a numeric payload")
+        raise ValueError(f"{label} response is missing a numeric payload")
     try:
         return float(value)
     except ValueError as exc:
-        raise ValueError(f"Invalid pulse-width value: {value!r}") from exc
+        raise ValueError(f"Invalid {label} value: {value!r}") from exc
+
+
+def parse_pulsewidth_response(response: str) -> float:
+    return parse_value_response(response, label="pulse-width")
+
+
+def parse_rffrequency_response(response: str) -> float:
+    return parse_value_response(response, label="RF frequency")
 
 
 def convert_pulse_width_to_seconds(value: float, source_unit: SourceUnit) -> float:
@@ -34,6 +44,16 @@ def convert_pulse_width_to_seconds(value: float, source_unit: SourceUnit) -> flo
     if source_unit == "ms":
         return value * 1e-3
     raise ValueError(f"Unsupported source unit: {source_unit!r}")
+
+
+def convert_frequency_to_hz(value: float, source_unit: FrequencyUnit) -> float:
+    if source_unit == "Hz":
+        return value
+    if source_unit == "kHz":
+        return value * 1e3
+    if source_unit == "MHz":
+        return value * 1e6
+    raise ValueError(f"Unsupported RF frequency unit: {source_unit!r}")
 
 
 @dataclass(slots=True)
@@ -57,6 +77,44 @@ class PulseWidthRange:
 
 
 @dataclass(slots=True)
+class FrequencyRange:
+    minimum_hz: float = 1.0
+    maximum_hz: float = 80e6
+
+    def validate(self, frequency_hz: float) -> None:
+        self.validate_bounds()
+        if frequency_hz < self.minimum_hz or frequency_hz > self.maximum_hz:
+            raise ValueError(
+                "RF frequency must stay within "
+                f"{self.minimum_hz:.12g}Hz and {self.maximum_hz:.12g}Hz"
+            )
+
+    def validate_bounds(self) -> None:
+        if self.minimum_hz <= 0:
+            raise ValueError("rf_frequency_range.minimum_hz must be positive")
+        if self.maximum_hz <= self.minimum_hz:
+            raise ValueError("rf_frequency_range.maximum_hz must be greater than minimum_hz")
+
+
+@dataclass(slots=True)
+class RfGeneratorConfig:
+    enabled: bool = False
+    visa_resource: str = ""
+    amplitude_vpp: float = 0.1
+    source_unit: FrequencyUnit = "Hz"
+    frequency_range: FrequencyRange = field(default_factory=FrequencyRange)
+
+    def validate(self) -> None:
+        self.frequency_range.validate_bounds()
+        if self.amplitude_vpp <= 0:
+            raise ValueError("rf.amplitude_vpp must be positive")
+        if self.source_unit not in VALID_FREQUENCY_UNITS:
+            raise ValueError(f"rf.source_unit must be one of {VALID_FREQUENCY_UNITS!r}")
+        if self.enabled and not self.visa_resource:
+            raise ValueError("rf.visa_resource is required when RF generator is enabled")
+
+
+@dataclass(slots=True)
 class PulseSyncConfig:
     visa_resource: str
     tcp_host: str
@@ -70,9 +128,11 @@ class PulseSyncConfig:
     trigger_slope: str = "POS"
     reset_on_start: bool = True
     width_range: PulseWidthRange = field(default_factory=PulseWidthRange)
+    rf: RfGeneratorConfig = field(default_factory=RfGeneratorConfig)
 
     def validate(self) -> None:
         self.width_range.validate_bounds()
+        self.rf.validate()
         if self.poll_interval_s <= 0:
             raise ValueError("poll_interval_s must be positive")
         if self.frequency_hz <= 0:
@@ -93,6 +153,7 @@ class PulseSyncConfig:
 class PulseSyncState:
     tcp_connected: bool = False
     awg_connected: bool = False
+    rf_connected: bool = False
     sync_active: bool = False
     paused: bool = False
     poll_in_progress: bool = False
@@ -102,6 +163,10 @@ class PulseSyncState:
     last_server_value: float | None = None
     last_width_s: float | None = None
     last_applied_width_s: float | None = None
+    last_rf_response: str | None = None
+    last_rf_server_value: float | None = None
+    last_rf_frequency_hz: float | None = None
+    last_applied_rf_frequency_hz: float | None = None
     last_error: str | None = None
     last_poll_started_at: float | None = None
     last_success_at: float | None = None
@@ -124,6 +189,16 @@ def pulse_sync_config_to_dict(config: PulseSyncConfig) -> dict[str, Any]:
             "minimum_s": config.width_range.minimum_s,
             "maximum_s": config.width_range.maximum_s,
         },
+        "rf": {
+            "enabled": config.rf.enabled,
+            "visa_resource": config.rf.visa_resource,
+            "amplitude_vpp": config.rf.amplitude_vpp,
+            "source_unit": config.rf.source_unit,
+            "frequency_range": {
+                "minimum_hz": config.rf.frequency_range.minimum_hz,
+                "maximum_hz": config.rf.frequency_range.maximum_hz,
+            },
+        },
     }
 
 
@@ -134,6 +209,12 @@ def pulse_sync_config_from_dict(
     width_range_data = data.get("width_range", {})
     if not isinstance(width_range_data, dict):
         raise ValueError("Config field 'width_range' must be an object")
+    rf_data = data.get("rf", {})
+    if not isinstance(rf_data, dict):
+        raise ValueError("Config field 'rf' must be an object")
+    rf_range_data = rf_data.get("frequency_range", {})
+    if not isinstance(rf_range_data, dict):
+        raise ValueError("Config field 'rf.frequency_range' must be an object")
     config = PulseSyncConfig(
         visa_resource=str(data.get("visa_resource", default_config.visa_resource)),
         tcp_host=str(data.get("tcp_host", default_config.tcp_host)),
@@ -149,6 +230,20 @@ def pulse_sync_config_from_dict(
         width_range=PulseWidthRange(
             minimum_s=float(width_range_data.get("minimum_s", default_config.width_range.minimum_s)),
             maximum_s=float(width_range_data.get("maximum_s", default_config.width_range.maximum_s)),
+        ),
+        rf=RfGeneratorConfig(
+            enabled=bool(rf_data.get("enabled", default_config.rf.enabled)),
+            visa_resource=str(rf_data.get("visa_resource", default_config.rf.visa_resource)),
+            amplitude_vpp=float(rf_data.get("amplitude_vpp", default_config.rf.amplitude_vpp)),
+            source_unit=str(rf_data.get("source_unit", default_config.rf.source_unit)),
+            frequency_range=FrequencyRange(
+                minimum_hz=float(
+                    rf_range_data.get("minimum_hz", default_config.rf.frequency_range.minimum_hz)
+                ),
+                maximum_hz=float(
+                    rf_range_data.get("maximum_hz", default_config.rf.frequency_range.maximum_hz)
+                ),
+            ),
         ),
     )
     config.validate()
@@ -189,9 +284,15 @@ class TcpPulseWidthClient:
         return self._socket
 
     def request_pulse_width(self) -> str:
+        return self.request("GET pulsewidth\r\n")
+
+    def request_rf_frequency(self) -> str:
+        return self.request("GET rffrequency\r\n")
+
+    def request(self, command: str) -> str:
         sock = self._ensure_connected()
         try:
-            sock.sendall(b"GET pulsewidth\r\n")
+            sock.sendall(command.encode("ascii"))
             response = self._read_line(sock)
         except OSError:
             self.close()
@@ -214,16 +315,22 @@ class PulseWidthSyncService:
         instrument: Keysight33600A,
         config: PulseSyncConfig,
         fetch_response: Callable[[], str],
+        rf_instrument: Keysight33600A | None = None,
+        fetch_rf_response: Callable[[], str] | None = None,
         state: PulseSyncState | None = None,
     ) -> None:
         self.instrument = instrument
+        self.rf_instrument = rf_instrument
         self.config = config
         self.fetch_response = fetch_response
+        self.fetch_rf_response = fetch_rf_response
         self.state = state or PulseSyncState()
         self.state.awg_connected = True
+        self.state.rf_connected = bool(rf_instrument)
 
     def reset_startup(self) -> None:
         self.state.startup_applied = False
+        self.state.last_applied_rf_frequency_hz = None
         self.state.sync_active = False
         self.state.pending_reconfigure = True
 
@@ -263,6 +370,7 @@ class PulseWidthSyncService:
                 self.instrument.set_pulse_width(pulse_width_s)
                 self.state.last_applied_width_s = pulse_width_s
 
+            self._poll_rf()
             self.state.sync_active = True
             self.state.pending_reconfigure = False
             self.state.last_error = None
@@ -275,3 +383,29 @@ class PulseWidthSyncService:
         finally:
             self.state.poll_in_progress = False
         return self.state
+
+    def _poll_rf(self) -> None:
+        if not self.config.rf.enabled:
+            return
+        if self.rf_instrument is None:
+            raise ConnectionError("RF generator is not connected")
+        if self.fetch_rf_response is None:
+            raise ConnectionError("RF frequency TCP request is not configured")
+
+        response = self.fetch_rf_response()
+        self.state.last_rf_response = response.strip()
+        server_value = parse_rffrequency_response(response)
+        frequency_hz = convert_frequency_to_hz(server_value, self.config.rf.source_unit)
+        self.config.rf.frequency_range.validate(frequency_hz)
+
+        self.state.last_rf_server_value = server_value
+        self.state.last_rf_frequency_hz = frequency_hz
+        if self.state.last_applied_rf_frequency_hz is None:
+            self.rf_instrument.configure_sine_output(
+                frequency_hz=frequency_hz,
+                amplitude_vpp=self.config.rf.amplitude_vpp,
+            )
+            self.state.last_applied_rf_frequency_hz = frequency_hz
+        elif self.state.last_applied_rf_frequency_hz != frequency_hz:
+            self.rf_instrument.set_sine_frequency(frequency_hz)
+            self.state.last_applied_rf_frequency_hz = frequency_hz
