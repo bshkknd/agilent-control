@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,14 +101,14 @@ class FrequencyRange:
 class RfGeneratorConfig:
     enabled: bool = False
     visa_resource: str = ""
-    amplitude_vpp: float = 0.1
+    amplitude_dbm: float = -10.0
     source_unit: FrequencyUnit = "Hz"
     frequency_range: FrequencyRange = field(default_factory=FrequencyRange)
 
     def validate(self) -> None:
         self.frequency_range.validate_bounds()
-        if self.amplitude_vpp <= 0:
-            raise ValueError("rf.amplitude_vpp must be positive")
+        if not math.isfinite(self.amplitude_dbm):
+            raise ValueError("rf.amplitude_dbm must be finite")
         if self.source_unit not in VALID_FREQUENCY_UNITS:
             raise ValueError(f"rf.source_unit must be one of {VALID_FREQUENCY_UNITS!r}")
         if self.enabled and not self.visa_resource:
@@ -192,7 +193,7 @@ def pulse_sync_config_to_dict(config: PulseSyncConfig) -> dict[str, Any]:
         "rf": {
             "enabled": config.rf.enabled,
             "visa_resource": config.rf.visa_resource,
-            "amplitude_vpp": config.rf.amplitude_vpp,
+            "amplitude_dbm": config.rf.amplitude_dbm,
             "source_unit": config.rf.source_unit,
             "frequency_range": {
                 "minimum_hz": config.rf.frequency_range.minimum_hz,
@@ -215,6 +216,10 @@ def pulse_sync_config_from_dict(
     rf_range_data = rf_data.get("frequency_range", {})
     if not isinstance(rf_range_data, dict):
         raise ValueError("Config field 'rf.frequency_range' must be an object")
+    rf_amplitude = rf_data.get(
+        "amplitude_dbm",
+        rf_data.get("amplitude_vpp", default_config.rf.amplitude_dbm),
+    )
     config = PulseSyncConfig(
         visa_resource=str(data.get("visa_resource", default_config.visa_resource)),
         tcp_host=str(data.get("tcp_host", default_config.tcp_host)),
@@ -234,7 +239,7 @@ def pulse_sync_config_from_dict(
         rf=RfGeneratorConfig(
             enabled=bool(rf_data.get("enabled", default_config.rf.enabled)),
             visa_resource=str(rf_data.get("visa_resource", default_config.rf.visa_resource)),
-            amplitude_vpp=float(rf_data.get("amplitude_vpp", default_config.rf.amplitude_vpp)),
+            amplitude_dbm=float(rf_amplitude),
             source_unit=str(rf_data.get("source_unit", default_config.rf.source_unit)),
             frequency_range=FrequencyRange(
                 minimum_hz=float(
@@ -403,7 +408,7 @@ class PulseWidthSyncService:
         if self.state.last_applied_rf_frequency_hz is None:
             self.rf_instrument.configure_sine_output(
                 frequency_hz=frequency_hz,
-                amplitude_vpp=self.config.rf.amplitude_vpp,
+                power_dbm=self.config.rf.amplitude_dbm,
             )
             self.state.last_applied_rf_frequency_hz = frequency_hz
         elif self.state.last_applied_rf_frequency_hz != frequency_hz:

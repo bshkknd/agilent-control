@@ -131,15 +131,14 @@ class Keysight33600ATest(unittest.TestCase):
         resource = FakeVisaResource()
         instrument = Keysight33600A(resource=resource)
 
-        instrument.configure_sine_output(frequency_hz=1.5e6, amplitude_vpp=0.2)
+        instrument.configure_sine_output(frequency_hz=1.5e6, power_dbm=-10.0)
 
         self.assertEqual(
             resource.writes,
             [
                 "FUNC SIN",
                 "FREQ 1500000",
-                "VOLT 0.2",
-                "VOLT:OFFS 0",
+                "POW -10DBM",
                 "OUTP:LOAD 50",
                 "OUTP ON",
             ],

@@ -38,7 +38,7 @@ python -m agilent_control.tui "USB0::0x0957::0x0407::MY44036401::0::INSTR" 192.1
 
 The TUI polls the TCP server by sending `GET pulsewidth\r\n`, accepts replies like `VALUE 0.010` or `VALUE 0.010\r\n`, converts the value using the selected source unit (`ns`, `us`, or `ms`), applies the full TTL pulse preset once, and then updates only the pulse width when the server value changes.
 
-The optional second RF generator is disabled by default. Enable it in config mode or with `--rf-enable`, set its VISA resource, amplitude, frequency unit (`Hz`, `kHz`, or `MHz`), and safe frequency limits. When enabled, the TUI sends `GET rffrequency\r\n` to the same TCP server, accepts `VALUE <number>` replies, configures the second generator as sine output with fixed amplitude and output ON, and then updates only frequency when it changes.
+The optional second RF generator is disabled by default. Enable it in config mode or with `--rf-enable`, set its VISA resource, power in dBm, frequency unit (`Hz`, `kHz`, or `MHz`), and safe frequency limits. When enabled, the TUI sends `GET rffrequency\r\n` to the same TCP server, accepts `VALUE <number>` replies, configures the second generator as sine output with fixed dBm power and output ON, and then updates only frequency when it changes.
 
 If TCP exchange is suspicious, run the raw protocol smoke test first:
 

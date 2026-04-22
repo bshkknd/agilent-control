@@ -145,15 +145,30 @@ class AwgPulseSyncTuiTest(unittest.TestCase):
         self.assertFalse(app.resource_picker_active)
         self.assertEqual(app.config.visa_resource, original)
 
-    def test_left_right_changes_config_group_when_field_is_not_adjustable(self) -> None:
+    def test_left_right_does_not_change_group_when_field_is_not_adjustable(self) -> None:
         app = self.make_app()
         app.config_mode = True
         self.select_config_field(app, "tcp_host")
 
         app._handle_key("RIGHT", Mock())
 
+        self.assertEqual(CONFIG_GROUPS[app.config_group_index].label, "TCP")
+        self.assertEqual(app._selected_config_field().key, "tcp_host")
+
+    def test_tab_and_shift_tab_change_config_groups(self) -> None:
+        app = self.make_app()
+        app.config_mode = True
+        self.select_config_field(app, "tcp_host")
+
+        app._handle_key("TAB", Mock())
+
         self.assertEqual(CONFIG_GROUPS[app.config_group_index].label, "Pulse AWG")
         self.assertEqual(app._selected_config_field().key, "visa_resource")
+
+        app._handle_key("SHIFT_TAB", Mock())
+
+        self.assertEqual(CONFIG_GROUPS[app.config_group_index].label, "TCP")
+        self.assertEqual(app._selected_config_field().key, "tcp_host")
 
     def test_up_down_changes_selected_row_inside_active_config_group(self) -> None:
         app = self.make_app()
@@ -217,6 +232,31 @@ class AwgPulseSyncTuiTest(unittest.TestCase):
         self.assertIn("RF Generator", output)
         self.assertIn("disabled", output)
         self.assertNotIn("Converted frequency", output)
+
+    def test_status_render_shows_connection_leds_on_one_line(self) -> None:
+        app = self.make_app()
+        app.state.awg_connected = True
+        app.state.tcp_connected = True
+        app.config.rf.enabled = False
+
+        output = self.render_text(app)
+        status_line = next(line for line in output.splitlines() if "AWG" in line and "TCP" in line)
+
+        self.assertIn("●", status_line)
+        self.assertIn("AWG", status_line)
+        self.assertIn("RF", status_line)
+        self.assertIn("TCP", status_line)
+        self.assertIn("connected", status_line)
+        self.assertIn("disabled", status_line)
+
+    def test_config_help_shows_tab_group_navigation(self) -> None:
+        app = self.make_app()
+        app.config_mode = True
+
+        output = self.render_text(app)
+
+        self.assertIn("left/right change", output)
+        self.assertIn("tab group", output)
 
 
 if __name__ == "__main__":

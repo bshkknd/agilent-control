@@ -70,7 +70,7 @@ CONFIG_GROUPS: tuple[ConfigGroup, ...] = (
         (
             ConfigField("rf.enabled", "Enabled", "bool"),
             ConfigField("rf.visa_resource", "VISA resource", "text", reconfigure=False),
-            ConfigField("rf.amplitude_vpp", "Amplitude Vpp", "float"),
+            ConfigField("rf.amplitude_dbm", "Power dBm", "float"),
             ConfigField("rf.source_unit", "Frequency unit", "choice"),
         ),
     ),
@@ -120,12 +120,16 @@ class KeyReader:
         key = self._msvcrt.getwch()
         if key in {"\x00", "\xe0"}:
             special = self._msvcrt.getwch()
-            mapping = {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT"}
+            mapping = {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT", "\x0f": "SHIFT_TAB"}
             return mapping.get(special)
         if key == "\r":
             return "ENTER"
         if key == "\x1b":
             return "ESC"
+        if key == "\t":
+            return "TAB"
+        if key == "\x0f":
+            return "SHIFT_TAB"
         return key.lower()
 
     def _read_posix_key(self) -> str | None:
@@ -137,6 +141,8 @@ class KeyReader:
         key = sys.stdin.read(1)
         if key == "\n":
             return "ENTER"
+        if key == "\t":
+            return "TAB"
         if key != "\x1b":
             return key.lower()
         readable, _, _ = select.select([sys.stdin], [], [], 0.01)
@@ -146,7 +152,7 @@ class KeyReader:
         if second != "[":
             return "ESC"
         third = sys.stdin.read(1)
-        mapping = {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT"}
+        mapping = {"A": "UP", "B": "DOWN", "C": "RIGHT", "D": "LEFT", "Z": "SHIFT_TAB"}
         return mapping.get(third)
 
 
@@ -371,9 +377,14 @@ class AwgPulseSyncTui:
         if key == "DOWN":
             self._move_config_field(1)
             return
+        if key == "TAB":
+            self._move_config_group(1)
+            return
+        if key == "SHIFT_TAB":
+            self._move_config_group(-1)
+            return
         if key in {"LEFT", "RIGHT"}:
-            if not self._adjust_selected_field(direction=1 if key == "RIGHT" else -1):
-                self._move_config_group(1 if key == "RIGHT" else -1)
+            self._adjust_selected_field(direction=1 if key == "RIGHT" else -1)
             return
         if key == "ENTER":
             self._edit_selected_field(live)
@@ -396,9 +407,7 @@ class AwgPulseSyncTui:
         table = Table.grid(padding=(0, 2))
         table.add_column(style="cyan")
         table.add_column()
-        table.add_row("AWG", "connected" if self.state.awg_connected else "disconnected")
-        table.add_row("RF", self._rf_status_text())
-        table.add_row("TCP", "connected" if self.state.tcp_connected else "disconnected")
+        table.add_row(self._connection_leds())
         table.add_row("Sync", self._sync_status_text())
         table.add_row("Last success", self._format_elapsed(self.state.last_success_at))
         table.add_row("Error", self.state.last_error or "-")
@@ -480,7 +489,9 @@ class AwgPulseSyncTui:
             text.append("up/down", style="bold")
             text.append(" select  ")
             text.append("left/right", style="bold")
-            text.append(" group/toggle  ")
+            text.append(" change  ")
+            text.append("tab", style="bold")
+            text.append(" group  ")
             text.append("enter", style="bold")
             text.append(" edit  ")
             text.append("esc", style="bold")
@@ -522,6 +533,27 @@ class AwgPulseSyncTui:
         if not self.config.rf.enabled:
             return "disabled"
         return "connected" if self.state.rf_connected else "disconnected"
+
+    def _connection_leds(self) -> Text:
+        text = Text()
+        states = (
+            ("AWG", "connected" if self.state.awg_connected else "disconnected"),
+            ("RF", self._rf_status_text()),
+            ("TCP", "connected" if self.state.tcp_connected else "disconnected"),
+        )
+        for index, (label, state) in enumerate(states):
+            if index > 0:
+                text.append("   ")
+            text.append(label, style="cyan")
+            text.append(" ")
+            if state == "connected":
+                text.append("●", style="green")
+            elif state == "disabled":
+                text.append("●", style="yellow")
+            else:
+                text.append("●", style="red")
+            text.append(f" {state}")
+        return text
 
     def _has_config_error(self) -> bool:
         if self.state.last_error is None:
@@ -768,7 +800,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--rf-enable", action="store_true", help="Enable the second RF function generator")
     parser.add_argument("--rf-visa-resource", default=None, help="VISA resource string for the RF generator")
-    parser.add_argument("--rf-amplitude", type=float, default=None, help="RF sine amplitude in Vpp")
+    parser.add_argument("--rf-amplitude", type=float, default=None, help="RF sine power in dBm")
     parser.add_argument(
         "--rf-source-unit",
         choices=VALID_FREQUENCY_UNITS,
@@ -812,7 +844,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.rf_visa_resource is not None:
         config.rf.visa_resource = args.rf_visa_resource
     if args.rf_amplitude is not None:
-        config.rf.amplitude_vpp = args.rf_amplitude
+        config.rf.amplitude_dbm = args.rf_amplitude
     if args.rf_source_unit is not None:
         config.rf.source_unit = args.rf_source_unit
     if args.rf_min_frequency is not None:

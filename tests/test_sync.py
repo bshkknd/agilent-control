@@ -177,7 +177,7 @@ class PulseSyncConfigPersistenceTest(unittest.TestCase):
             rf=RfGeneratorConfig(
                 enabled=True,
                 visa_resource="USB0::RF",
-                amplitude_vpp=0.25,
+                amplitude_dbm=-7.5,
                 source_unit="MHz",
                 frequency_range=FrequencyRange(minimum_hz=1e6, maximum_hz=10e6),
             ),
@@ -193,9 +193,36 @@ class PulseSyncConfigPersistenceTest(unittest.TestCase):
         self.assertAlmostEqual(loaded.width_range.maximum_s, 1000e-6)
         self.assertTrue(loaded.rf.enabled)
         self.assertEqual(loaded.rf.visa_resource, "USB0::RF")
-        self.assertAlmostEqual(loaded.rf.amplitude_vpp, 0.25)
+        self.assertAlmostEqual(loaded.rf.amplitude_dbm, -7.5)
         self.assertEqual(loaded.rf.source_unit, "MHz")
         self.assertAlmostEqual(loaded.rf.frequency_range.maximum_hz, 10e6)
+
+    def test_loads_legacy_rf_amplitude_vpp_as_dbm_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "awg_tui_config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "visa_resource": "USB0::TEST",
+                        "tcp_host": "127.0.0.1",
+                        "tcp_port": 9000,
+                        "rf": {
+                            "enabled": True,
+                            "visa_resource": "USB0::RF",
+                            "amplitude_vpp": -10.0,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = load_pulse_sync_config(path)
+            save_pulse_sync_config(path, loaded)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertAlmostEqual(loaded.rf.amplitude_dbm, -10.0)
+        self.assertEqual(saved["rf"]["amplitude_dbm"], -10.0)
+        self.assertNotIn("amplitude_vpp", saved["rf"])
 
     def test_load_rejects_invalid_json_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -222,6 +249,19 @@ class PulseSyncConfigPersistenceTest(unittest.TestCase):
             rf=RfGeneratorConfig(enabled=True),
         )
         with self.assertRaisesRegex(ValueError, "rf.visa_resource"):
+            config.validate()
+
+    def test_validate_accepts_negative_rf_dbm_and_rejects_non_finite(self) -> None:
+        config = PulseSyncConfig(
+            visa_resource="USB0::TEST",
+            tcp_host="127.0.0.1",
+            tcp_port=9000,
+            rf=RfGeneratorConfig(amplitude_dbm=-20.0),
+        )
+        config.validate()
+
+        config.rf.amplitude_dbm = float("inf")
+        with self.assertRaisesRegex(ValueError, "amplitude_dbm"):
             config.validate()
 
 
@@ -351,7 +391,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
             rf=RfGeneratorConfig(
                 enabled=True,
                 visa_resource="USB0::RF",
-                amplitude_vpp=0.2,
+                amplitude_dbm=-10.0,
                 source_unit="MHz",
                 frequency_range=FrequencyRange(minimum_hz=1e6, maximum_hz=10e6),
             ),
@@ -372,8 +412,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
             [
                 "FUNC SIN",
                 "FREQ 2500000",
-                "VOLT 0.2",
-                "VOLT:OFFS 0",
+                "POW -10DBM",
                 "OUTP:LOAD 50",
                 "OUTP ON",
             ],
@@ -390,7 +429,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
             rf=RfGeneratorConfig(
                 enabled=True,
                 visa_resource="USB0::RF",
-                amplitude_vpp=0.2,
+                amplitude_dbm=-10.0,
                 source_unit="MHz",
                 frequency_range=FrequencyRange(minimum_hz=1e6, maximum_hz=10e6),
             ),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Iterable, Protocol
 
@@ -300,15 +301,14 @@ class Keysight33600A:
     def configure_sine_output(
         self,
         frequency_hz: float,
-        amplitude_vpp: float,
-        offset_v: float = 0.0,
+        power_dbm: float,
         load_ohm: float | None = 50.0,
         reset: bool = False,
     ) -> None:
         if frequency_hz <= 0:
             raise ValueError("frequency_hz must be positive")
-        if amplitude_vpp <= 0:
-            raise ValueError("amplitude_vpp must be positive")
+        if not math.isfinite(power_dbm):
+            raise ValueError("power_dbm must be finite")
         if load_ohm is not None and load_ohm <= 0:
             raise ValueError("load_ohm must be positive")
 
@@ -319,8 +319,7 @@ class Keysight33600A:
             [
                 "FUNC SIN",
                 f"FREQ {frequency_hz:.12g}",
-                f"VOLT {amplitude_vpp:.12g}",
-                f"VOLT:OFFS {offset_v:.12g}",
+                f"POW {power_dbm:.12g}DBM",
             ]
         )
         if load_ohm is None:
