@@ -38,27 +38,54 @@ class ConfigField:
     reconfigure: bool = True
 
 
-CONFIG_FIELDS: tuple[ConfigField, ...] = (
-    ConfigField("visa_resource", "AWG VISA resource", "text", reconfigure=False),
-    ConfigField("tcp_host", "TCP host", "text", reconfigure=False),
-    ConfigField("tcp_port", "TCP port", "int", reconfigure=False),
-    ConfigField("poll_interval_s", "Poll interval seconds", "float"),
-    ConfigField("source_unit", "Source unit", "choice"),
-    ConfigField("frequency_hz", "Pulse frequency Hz", "float"),
-    ConfigField("high_level_v", "High level volts", "float"),
-    ConfigField("low_level_v", "Low level volts", "float"),
-    ConfigField("edge_time_s", "Edge time seconds", "float"),
-    ConfigField("trigger_slope", "Trigger slope", "choice"),
-    ConfigField("reset_on_start", "Reset on start", "bool"),
-    ConfigField("width_range.minimum_s", "Width min seconds", "float", reconfigure=False),
-    ConfigField("width_range.maximum_s", "Width max seconds", "float", reconfigure=False),
-    ConfigField("rf.enabled", "RF generator enabled", "bool"),
-    ConfigField("rf.visa_resource", "RF VISA resource", "text", reconfigure=False),
-    ConfigField("rf.amplitude_vpp", "RF amplitude Vpp", "float"),
-    ConfigField("rf.source_unit", "RF frequency unit", "choice"),
-    ConfigField("rf.frequency_range.minimum_hz", "RF frequency min Hz", "float", reconfigure=False),
-    ConfigField("rf.frequency_range.maximum_hz", "RF frequency max Hz", "float", reconfigure=False),
+@dataclass(frozen=True, slots=True)
+class ConfigGroup:
+    label: str
+    fields: tuple[ConfigField, ...]
+
+
+CONFIG_GROUPS: tuple[ConfigGroup, ...] = (
+    ConfigGroup(
+        "TCP",
+        (
+            ConfigField("tcp_host", "Host", "text", reconfigure=False),
+            ConfigField("tcp_port", "Port", "int", reconfigure=False),
+            ConfigField("poll_interval_s", "Poll interval seconds", "float"),
+        ),
+    ),
+    ConfigGroup(
+        "Pulse AWG",
+        (
+            ConfigField("visa_resource", "VISA resource", "text", reconfigure=False),
+            ConfigField("source_unit", "Source unit", "choice"),
+            ConfigField("frequency_hz", "Pulse frequency Hz", "float"),
+            ConfigField("high_level_v", "High level volts", "float"),
+            ConfigField("low_level_v", "Low level volts", "float"),
+            ConfigField("edge_time_s", "Edge time seconds", "float"),
+            ConfigField("trigger_slope", "Trigger slope", "choice"),
+        ),
+    ),
+    ConfigGroup(
+        "RF Generator",
+        (
+            ConfigField("rf.enabled", "Enabled", "bool"),
+            ConfigField("rf.visa_resource", "VISA resource", "text", reconfigure=False),
+            ConfigField("rf.amplitude_vpp", "Amplitude Vpp", "float"),
+            ConfigField("rf.source_unit", "Frequency unit", "choice"),
+        ),
+    ),
+    ConfigGroup(
+        "Safety",
+        (
+            ConfigField("reset_on_start", "Reset on start", "bool"),
+            ConfigField("width_range.minimum_s", "Width min seconds", "float", reconfigure=False),
+            ConfigField("width_range.maximum_s", "Width max seconds", "float", reconfigure=False),
+            ConfigField("rf.frequency_range.minimum_hz", "RF frequency min Hz", "float", reconfigure=False),
+            ConfigField("rf.frequency_range.maximum_hz", "RF frequency max Hz", "float", reconfigure=False),
+        ),
+    ),
 )
+CONFIG_FIELDS: tuple[ConfigField, ...] = tuple(field for group in CONFIG_GROUPS for field in group.fields)
 
 
 class KeyReader:
@@ -138,7 +165,8 @@ class AwgPulseSyncTui:
         self.should_exit = False
         self.next_poll_at = 0.0
         self.config_mode = False
-        self.config_index = 0
+        self.config_group_index = 0
+        self.config_field_index = 0
         self._poll_wake_event = threading.Event()
         self._poll_stop_event = threading.Event()
         self._poll_thread: threading.Thread | None = None
@@ -147,6 +175,27 @@ class AwgPulseSyncTui:
         self.resource_picker_active = False
         self.resource_picker_index = 0
         self.resource_picker_items: list[str] = []
+
+    @property
+    def config_index(self) -> int:
+        index = 0
+        for group_index, group in enumerate(CONFIG_GROUPS):
+            if group_index == self.config_group_index:
+                return index + self.config_field_index
+            index += len(group.fields)
+        return 0
+
+    @config_index.setter
+    def config_index(self, index: int) -> None:
+        remaining = index % len(CONFIG_FIELDS)
+        for group_index, group in enumerate(CONFIG_GROUPS):
+            if remaining < len(group.fields):
+                self.config_group_index = group_index
+                self.config_field_index = remaining
+                return
+            remaining -= len(group.fields)
+        self.config_group_index = 0
+        self.config_field_index = 0
 
     def run(self) -> int:
         self._connect_awg()
@@ -317,26 +366,31 @@ class AwgPulseSyncTui:
             self.config_mode = False
             return
         if key == "UP":
-            self.config_index = (self.config_index - 1) % len(CONFIG_FIELDS)
+            self._move_config_field(-1)
             return
         if key == "DOWN":
-            self.config_index = (self.config_index + 1) % len(CONFIG_FIELDS)
+            self._move_config_field(1)
             return
         if key in {"LEFT", "RIGHT"}:
-            self._adjust_selected_field(direction=1 if key == "RIGHT" else -1)
+            if not self._adjust_selected_field(direction=1 if key == "RIGHT" else -1):
+                self._move_config_group(1 if key == "RIGHT" else -1)
             return
         if key == "ENTER":
             self._edit_selected_field(live)
 
     def render(self) -> Group:
-        return Group(
+        renderables = [
             self._render_status_panel(),
             self._render_value_panel(),
             self._render_rf_panel(),
-            self._render_config_panel(),
-            self._render_resource_picker_panel(),
             self._render_help_panel(),
-        )
+        ]
+        if self.config_mode:
+            renderables.insert(3, self._render_config_panel())
+        if self.resource_picker_active:
+            insert_at = 4 if self.config_mode else 3
+            renderables.insert(insert_at, self._render_resource_picker_panel())
+        return Group(*renderables)
 
     def _render_status_panel(self) -> Panel:
         table = Table.grid(padding=(0, 2))
@@ -346,18 +400,16 @@ class AwgPulseSyncTui:
         table.add_row("RF", self._rf_status_text())
         table.add_row("TCP", "connected" if self.state.tcp_connected else "disconnected")
         table.add_row("Sync", self._sync_status_text())
-        table.add_row("Mode", "config" if self.config_mode else "normal")
-        table.add_row("Config file", str(self.config_path))
-        table.add_row("Last poll", self._format_elapsed(self.state.last_poll_started_at))
         table.add_row("Last success", self._format_elapsed(self.state.last_success_at))
         table.add_row("Error", self.state.last_error or "-")
+        if self.config_mode or self._has_config_error():
+            table.add_row("Config file", str(self.config_path))
         return Panel(table, title="Status", border_style="green")
 
     def _render_value_panel(self) -> Panel:
         table = Table.grid(padding=(0, 2))
         table.add_column(style="cyan")
         table.add_column()
-        table.add_row("Raw response", self._styled_value("last_response", self.state.last_response or "-"))
         table.add_row(
             "Server value",
             self._styled_value(
@@ -373,8 +425,9 @@ class AwgPulseSyncTui:
         table = Table.grid(padding=(0, 2))
         table.add_column(style="cyan")
         table.add_column()
-        table.add_row("Enabled", "yes" if self.config.rf.enabled else "no")
-        table.add_row("Raw response", self._styled_value("last_rf_response", self.state.last_rf_response or "-"))
+        if not self.config.rf.enabled:
+            table.add_row("RF", "disabled")
+            return Panel(table, title="RF Generator", border_style="cyan")
         table.add_row(
             "Server value",
             self._styled_value(
@@ -398,37 +451,40 @@ class AwgPulseSyncTui:
         return Panel(table, title="RF Generator", border_style="cyan")
 
     def _render_config_panel(self) -> Panel:
+        group = CONFIG_GROUPS[self.config_group_index]
         table = Table.grid(padding=(0, 2))
         table.add_column(style="cyan")
         table.add_column()
-        for index, field in enumerate(CONFIG_FIELDS):
+        for index, field in enumerate(group.fields):
             label = field.label
-            if self.config_mode and index == self.config_index:
+            value_text = Text(self._display_config_value(field.key))
+            if index == self.config_field_index:
                 label = f"> {label}"
-            value_text = self._styled_value(field.key, self._display_config_value(field.key))
-            if self.config_mode and index == self.config_index:
                 value_text.stylize("bold white on dark_green")
             table.add_row(label, value_text)
-        return Panel(table, title="Configuration", border_style="yellow")
+        title = f"Config: {group.label} [{self.config_group_index + 1}/{len(CONFIG_GROUPS)}]"
+        return Panel(table, title=title, border_style="yellow")
 
     def _render_help_panel(self) -> Panel:
         text = Text()
         text.append("space", style="bold")
-        text.append(" pause/resume  ")
+        text.append(" pause  ")
         text.append("r", style="bold")
         text.append(" reconnect  ")
         text.append("c", style="bold")
-        text.append(" config mode  ")
+        text.append(" config  ")
         text.append("q", style="bold")
-        text.append(" quit  ")
-        text.append("up/down", style="bold")
-        text.append(" select  ")
-        text.append("left/right", style="bold")
-        text.append(" toggle/change  ")
-        text.append("enter", style="bold")
-        text.append(" edit  ")
-        text.append("esc", style="bold")
-        text.append(" exit config/picker")
+        text.append(" quit")
+        if self.config_mode:
+            text.append("  ")
+            text.append("up/down", style="bold")
+            text.append(" select  ")
+            text.append("left/right", style="bold")
+            text.append(" group/toggle  ")
+            text.append("enter", style="bold")
+            text.append(" edit  ")
+            text.append("esc", style="bold")
+            text.append(" exit")
         return Panel(text, title="Keys", border_style="magenta")
 
     def _render_resource_picker_panel(self) -> Panel:
@@ -467,6 +523,11 @@ class AwgPulseSyncTui:
             return "disabled"
         return "connected" if self.state.rf_connected else "disconnected"
 
+    def _has_config_error(self) -> bool:
+        if self.state.last_error is None:
+            return False
+        return self.state.last_error.startswith(("Config error:", "Input error:", "Config load error:"))
+
     def _set_paused(self, paused: bool) -> None:
         self.state.paused = paused
         self.state.last_error = None
@@ -490,8 +551,20 @@ class AwgPulseSyncTui:
             target = getattr(target, part)
         setattr(target, parts[-1], value)
 
-    def _adjust_selected_field(self, direction: int) -> None:
-        field = CONFIG_FIELDS[self.config_index]
+    def _selected_config_field(self) -> ConfigField:
+        return CONFIG_GROUPS[self.config_group_index].fields[self.config_field_index]
+
+    def _move_config_field(self, direction: int) -> None:
+        group = CONFIG_GROUPS[self.config_group_index]
+        self.config_field_index = (self.config_field_index + direction) % len(group.fields)
+
+    def _move_config_group(self, direction: int) -> None:
+        self.config_group_index = (self.config_group_index + direction) % len(CONFIG_GROUPS)
+        group = CONFIG_GROUPS[self.config_group_index]
+        self.config_field_index = min(self.config_field_index, len(group.fields) - 1)
+
+    def _adjust_selected_field(self, direction: int) -> bool:
+        field = self._selected_config_field()
         current = self._get_config_value(field.key)
         if field.key == "source_unit":
             index = VALID_SOURCE_UNITS.index(current)
@@ -506,11 +579,12 @@ class AwgPulseSyncTui:
         elif field.key in {"reset_on_start", "rf.enabled"}:
             new_value = not bool(current)
         else:
-            return
+            return False
         self._apply_config_change(field, new_value)
+        return True
 
     def _edit_selected_field(self, live: Live) -> None:
-        field = CONFIG_FIELDS[self.config_index]
+        field = self._selected_config_field()
         if field.key in {"visa_resource", "rf.visa_resource"}:
             self._open_resource_picker()
             return
@@ -661,7 +735,7 @@ class AwgPulseSyncTui:
             self.resource_picker_index = (self.resource_picker_index + 1) % len(self.resource_picker_items)
             return
         if key == "ENTER":
-            self._apply_config_change(CONFIG_FIELDS[self.config_index], self.resource_picker_items[self.resource_picker_index])
+            self._apply_config_change(self._selected_config_field(), self.resource_picker_items[self.resource_picker_index])
             self.resource_picker_active = False
 
 
