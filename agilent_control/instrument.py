@@ -331,7 +331,7 @@ class Keysight33600A:
 
     def configure_ttl_single_pulse(
         self,
-        frequency_hz: float = 10.0,
+        period_s: float = 0.1,
         pulse_width_s: float = 10e-6,
         high_level_v: float = 5.0,
         low_level_v: float = 0.0,
@@ -344,8 +344,10 @@ class Keysight33600A:
             raise ValueError("trigger_slope must be 'POS' or 'NEG'")
         if pulse_width_s <= 0:
             raise ValueError("pulse_width_s must be positive")
-        if frequency_hz <= 0:
-            raise ValueError("frequency_hz must be positive")
+        if period_s <= 0:
+            raise ValueError("period_s must be positive")
+        if pulse_width_s > period_s:
+            raise ValueError("pulse_width_s must be no greater than period_s")
         if edge_time_s <= 0:
             raise ValueError("edge_time_s must be positive")
         if high_level_v <= low_level_v:
@@ -359,7 +361,7 @@ class Keysight33600A:
                 "OUTP:LOAD INF",
                 "FUNC PULS",
                 "DISPlay:UNIT:PULSe WIDTh",
-                f"FREQ {frequency_hz:.12g}",
+                f"FREQ {1.0 / period_s:.12g}",
                 "FUNC:PULS:HOLD WIDT",
                 f"FUNC:PULS:WIDT {pulse_width_s:.12g}",
                 f"FUNC:PULS:TRAN {edge_time_s:.12g}",

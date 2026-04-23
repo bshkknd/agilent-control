@@ -89,7 +89,7 @@ class Keysight33600ATest(unittest.TestCase):
         instrument = Keysight33600A(resource=resource)
 
         instrument.configure_ttl_single_pulse(
-            frequency_hz=20.0,
+            period_s=0.05,
             pulse_width_s=20e-6,
             high_level_v=3.3,
             low_level_v=0.2,
@@ -118,6 +118,15 @@ class Keysight33600ATest(unittest.TestCase):
                 "OUTP ON",
             ],
         )
+
+    def test_configure_ttl_single_pulse_rejects_width_longer_than_period(self) -> None:
+        resource = FakeVisaResource()
+        instrument = Keysight33600A(resource=resource)
+
+        with self.assertRaisesRegex(ValueError, "period_s"):
+            instrument.configure_ttl_single_pulse(period_s=1e-6, pulse_width_s=2e-6)
+
+        self.assertEqual(resource.writes, [])
 
     def test_set_pulse_width_writes_width_command(self) -> None:
         resource = FakeVisaResource()

@@ -58,7 +58,7 @@ CONFIG_GROUPS: tuple[ConfigGroup, ...] = (
         (
             ConfigField("visa_resource", "VISA resource", "text", reconfigure=False),
             ConfigField("source_unit", "Source unit", "choice"),
-            ConfigField("frequency_hz", "Pulse frequency Hz", "float"),
+            ConfigField("period_s", "Pulse period seconds", "float"),
             ConfigField("high_level_v", "High level volts", "float"),
             ConfigField("low_level_v", "Low level volts", "float"),
             ConfigField("edge_time_s", "Edge time seconds", "float"),
@@ -79,7 +79,6 @@ CONFIG_GROUPS: tuple[ConfigGroup, ...] = (
         (
             ConfigField("reset_on_start", "Reset on start", "bool"),
             ConfigField("width_range.minimum_s", "Width min seconds", "float", reconfigure=False),
-            ConfigField("width_range.maximum_s", "Width max seconds", "float", reconfigure=False),
             ConfigField("rf.frequency_range.minimum_hz", "RF frequency min Hz", "float", reconfigure=False),
             ConfigField("rf.frequency_range.maximum_hz", "RF frequency max Hz", "float", reconfigure=False),
         ),
@@ -788,7 +787,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Unit used by the numeric value returned from the TCP server",
     )
-    parser.add_argument("--frequency", type=float, default=None, help="TTL pulse repetition frequency in Hz")
+    parser.add_argument("--period", type=float, default=None, help="TTL pulse repetition period in seconds")
+    parser.add_argument(
+        "--frequency",
+        type=float,
+        default=None,
+        help="Deprecated: TTL pulse repetition frequency in Hz; converted to period",
+    )
     parser.add_argument("--high-level", type=float, default=None, help="TTL high voltage level")
     parser.add_argument("--low-level", type=float, default=None, help="TTL low voltage level")
     parser.add_argument("--edge-time", type=float, default=None, help="Pulse edge time in seconds")
@@ -833,7 +838,7 @@ def main(argv: list[str] | None = None) -> int:
         "tcp_port": args.tcp_port,
         "poll_interval_s": args.poll_interval,
         "source_unit": args.source_unit,
-        "frequency_hz": args.frequency,
+        "period_s": args.period,
         "high_level_v": args.high_level,
         "low_level_v": args.low_level,
         "edge_time_s": args.edge_time,
@@ -842,6 +847,10 @@ def main(argv: list[str] | None = None) -> int:
     for key, value in overrides.items():
         if value is not None:
             setattr(config, key, value)
+    if args.frequency is not None:
+        if args.frequency <= 0:
+            parser.error("--frequency must be positive")
+        config.period_s = 1.0 / args.frequency
     if args.no_reset_on_start:
         config.reset_on_start = False
     if args.rf_enable:

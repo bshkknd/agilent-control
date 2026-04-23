@@ -81,7 +81,7 @@ class AwgPulseSyncTuiTest(unittest.TestCase):
 
         app._adjust_selected_field(direction=1)
 
-        self.assertEqual(app.config.rf.source_unit, "kHz")
+        self.assertEqual(app.config.rf.source_unit, "MHz")
         self.assertTrue(app.state.pending_reconfigure)
         self.assertTrue(app._is_highlighted("rf.source_unit"))
 

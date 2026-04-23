@@ -36,9 +36,9 @@ python -m scripts.windows_smoke_test "USB0::0x0957::0x2C07::MY12345678::INSTR"
 python -m agilent_control.tui "USB0::0x0957::0x0407::MY44036401::0::INSTR" 192.168.1.20 9000 --source-unit us
 ```
 
-The TUI polls the TCP server by sending `GET pulsewidth\r\n`, accepts replies like `VALUE 0.010` or `VALUE 0.010\r\n`, converts the value using the selected source unit (`ns`, `us`, or `ms`), applies the full TTL pulse preset once, and then updates only the pulse width when the server value changes.
+The TUI polls the TCP server by sending `GET pulsewidth\r\n`, accepts replies like `VALUE 0.010` or `VALUE 0.010\r\n`, converts the value using the selected source unit (`ns`, `us`, or `ms`), applies the full TTL pulse preset once, and then updates only the pulse width when the server value changes. Pulse width is limited to 20 ns minimum and cannot exceed the configured AWG period; the period is limited to 3 s maximum.
 
-The optional second RF generator is disabled by default. Enable it in config mode or with `--rf-enable`, set its VISA resource, power in dBm, frequency unit (`Hz`, `kHz`, or `MHz`), and safe frequency limits. When enabled, the TUI sends `GET rffrequency\r\n` to the same TCP server, accepts `VALUE <number>` replies, configures the second generator as sine output with fixed dBm power and output ON, and then updates only frequency when it changes.
+The optional second RF generator is disabled by default. Enable it in config mode or with `--rf-enable`, set its VISA resource, power in dBm, frequency unit (`kHz`, `MHz`, or `GHz`), and safe frequency limits. RF frequency defaults to a safe range of 100 kHz to 20 GHz, and RF power is limited to -20 dBm through 30 dBm. When enabled, the TUI sends `GET rffrequency\r\n` to the same TCP server, accepts `VALUE <number>` replies, configures the second generator as sine output with fixed dBm power and output ON, and then updates only frequency when it changes.
 
 If TCP exchange is suspicious, run the raw protocol smoke test first:
 
@@ -58,7 +58,7 @@ This script does exactly one `recv(1024)` after sending `GET pulsewidth\r\n` and
 
 ## TTL Single Pulse Example
 
-Configure a single `0 V` to `5 V` pulse on the main output, with `10 Hz` base frequency, `10 us` width, and one pulse per external rising-edge trigger:
+Configure a single `0 V` to `5 V` pulse on the main output, with `0.1 s` period, `10 us` width, and one pulse per external rising-edge trigger:
 
 ```python
 import pyvisa

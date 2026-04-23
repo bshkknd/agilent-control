@@ -11,8 +11,8 @@ from .instrument import Keysight33600A
 
 SourceUnit = Literal["ns", "us", "ms"]
 VALID_SOURCE_UNITS: tuple[SourceUnit, ...] = ("ns", "us", "ms")
-FrequencyUnit = Literal["Hz", "kHz", "MHz"]
-VALID_FREQUENCY_UNITS: tuple[FrequencyUnit, ...] = ("Hz", "kHz", "MHz")
+FrequencyUnit = Literal["kHz", "MHz", "GHz"]
+VALID_FREQUENCY_UNITS: tuple[FrequencyUnit, ...] = ("kHz", "MHz", "GHz")
 
 
 def parse_value_response(response: str, label: str = "value") -> float:
@@ -48,39 +48,38 @@ def convert_pulse_width_to_seconds(value: float, source_unit: SourceUnit) -> flo
 
 
 def convert_frequency_to_hz(value: float, source_unit: FrequencyUnit) -> float:
-    if source_unit == "Hz":
-        return value
     if source_unit == "kHz":
         return value * 1e3
     if source_unit == "MHz":
         return value * 1e6
+    if source_unit == "GHz":
+        return value * 1e9
     raise ValueError(f"Unsupported RF frequency unit: {source_unit!r}")
 
 
 @dataclass(slots=True)
 class PulseWidthRange:
-    minimum_s: float = 10e-9
-    maximum_s: float = 1000e-6
+    minimum_s: float = 20e-9
 
-    def validate(self, pulse_width_s: float) -> None:
+    def validate(self, pulse_width_s: float, period_s: float) -> None:
         self.validate_bounds()
-        if pulse_width_s < self.minimum_s or pulse_width_s > self.maximum_s:
+        if period_s <= 0:
+            raise ValueError("period_s must be positive")
+        if pulse_width_s < self.minimum_s or pulse_width_s > period_s:
             raise ValueError(
                 "pulse width must stay within "
-                f"{self.minimum_s:.12g}s and {self.maximum_s:.12g}s"
+                f"{self.minimum_s:.12g}s and period {period_s:.12g}s"
             )
 
     def validate_bounds(self) -> None:
         if self.minimum_s <= 0:
             raise ValueError("width_range.minimum_s must be positive")
-        if self.maximum_s <= self.minimum_s:
-            raise ValueError("width_range.maximum_s must be greater than minimum_s")
 
 
 @dataclass(slots=True)
 class FrequencyRange:
-    minimum_hz: float = 1.0
-    maximum_hz: float = 80e6
+    minimum_hz: float = 100e3
+    maximum_hz: float = 20e9
 
     def validate(self, frequency_hz: float) -> None:
         self.validate_bounds()
@@ -102,13 +101,15 @@ class RfGeneratorConfig:
     enabled: bool = False
     visa_resource: str = ""
     amplitude_dbm: float = -10.0
-    source_unit: FrequencyUnit = "Hz"
+    source_unit: FrequencyUnit = "kHz"
     frequency_range: FrequencyRange = field(default_factory=FrequencyRange)
 
     def validate(self) -> None:
         self.frequency_range.validate_bounds()
         if not math.isfinite(self.amplitude_dbm):
             raise ValueError("rf.amplitude_dbm must be finite")
+        if self.amplitude_dbm < -20.0 or self.amplitude_dbm > 30.0:
+            raise ValueError("rf.amplitude_dbm must stay within -20 dBm and 30 dBm")
         if self.source_unit not in VALID_FREQUENCY_UNITS:
             raise ValueError(f"rf.source_unit must be one of {VALID_FREQUENCY_UNITS!r}")
         if self.enabled and not self.visa_resource:
@@ -122,7 +123,7 @@ class PulseSyncConfig:
     tcp_port: int
     poll_interval_s: float = 0.5
     source_unit: SourceUnit = "us"
-    frequency_hz: float = 10.0
+    period_s: float = 0.1
     high_level_v: float = 5.0
     low_level_v: float = 0.0
     edge_time_s: float = 5e-9
@@ -136,8 +137,10 @@ class PulseSyncConfig:
         self.rf.validate()
         if self.poll_interval_s <= 0:
             raise ValueError("poll_interval_s must be positive")
-        if self.frequency_hz <= 0:
-            raise ValueError("frequency_hz must be positive")
+        if self.period_s <= 0 or self.period_s > 3.0:
+            raise ValueError("period_s must be positive and no greater than 3s")
+        if self.width_range.minimum_s > self.period_s:
+            raise ValueError("width_range.minimum_s must be no greater than period_s")
         if self.edge_time_s <= 0:
             raise ValueError("edge_time_s must be positive")
         if self.high_level_v <= self.low_level_v:
@@ -180,7 +183,7 @@ def pulse_sync_config_to_dict(config: PulseSyncConfig) -> dict[str, Any]:
         "tcp_port": config.tcp_port,
         "poll_interval_s": config.poll_interval_s,
         "source_unit": config.source_unit,
-        "frequency_hz": config.frequency_hz,
+        "period_s": config.period_s,
         "high_level_v": config.high_level_v,
         "low_level_v": config.low_level_v,
         "edge_time_s": config.edge_time_s,
@@ -188,7 +191,6 @@ def pulse_sync_config_to_dict(config: PulseSyncConfig) -> dict[str, Any]:
         "reset_on_start": config.reset_on_start,
         "width_range": {
             "minimum_s": config.width_range.minimum_s,
-            "maximum_s": config.width_range.maximum_s,
         },
         "rf": {
             "enabled": config.rf.enabled,
@@ -220,13 +222,22 @@ def pulse_sync_config_from_dict(
         "amplitude_dbm",
         rf_data.get("amplitude_vpp", default_config.rf.amplitude_dbm),
     )
+    if "period_s" in data:
+        period_s = float(data["period_s"])
+    elif "frequency_hz" in data:
+        frequency_hz = float(data["frequency_hz"])
+        if frequency_hz <= 0:
+            raise ValueError("frequency_hz must be positive")
+        period_s = 1.0 / frequency_hz
+    else:
+        period_s = default_config.period_s
     config = PulseSyncConfig(
         visa_resource=str(data.get("visa_resource", default_config.visa_resource)),
         tcp_host=str(data.get("tcp_host", default_config.tcp_host)),
         tcp_port=int(data.get("tcp_port", default_config.tcp_port)),
         poll_interval_s=float(data.get("poll_interval_s", default_config.poll_interval_s)),
         source_unit=str(data.get("source_unit", default_config.source_unit)),
-        frequency_hz=float(data.get("frequency_hz", default_config.frequency_hz)),
+        period_s=period_s,
         high_level_v=float(data.get("high_level_v", default_config.high_level_v)),
         low_level_v=float(data.get("low_level_v", default_config.low_level_v)),
         edge_time_s=float(data.get("edge_time_s", default_config.edge_time_s)),
@@ -234,7 +245,6 @@ def pulse_sync_config_from_dict(
         reset_on_start=bool(data.get("reset_on_start", default_config.reset_on_start)),
         width_range=PulseWidthRange(
             minimum_s=float(width_range_data.get("minimum_s", default_config.width_range.minimum_s)),
-            maximum_s=float(width_range_data.get("maximum_s", default_config.width_range.maximum_s)),
         ),
         rf=RfGeneratorConfig(
             enabled=bool(rf_data.get("enabled", default_config.rf.enabled)),
@@ -354,14 +364,14 @@ class PulseWidthSyncService:
             self.state.last_response = response.strip()
             server_value = parse_pulsewidth_response(response)
             pulse_width_s = convert_pulse_width_to_seconds(server_value, self.config.source_unit)
-            self.config.width_range.validate(pulse_width_s)
+            self.config.width_range.validate(pulse_width_s, self.config.period_s)
 
             self.state.last_server_value = server_value
             self.state.last_width_s = pulse_width_s
 
             if not self.state.startup_applied:
                 self.instrument.configure_ttl_single_pulse(
-                    frequency_hz=self.config.frequency_hz,
+                    period_s=self.config.period_s,
                     pulse_width_s=pulse_width_s,
                     high_level_v=self.config.high_level_v,
                     low_level_v=self.config.low_level_v,

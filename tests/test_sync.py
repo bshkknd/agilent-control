@@ -153,27 +153,32 @@ class ConvertPulseWidthToSecondsTest(unittest.TestCase):
 
 
 class ConvertFrequencyToHzTest(unittest.TestCase):
-    def test_supports_hz(self) -> None:
-        self.assertAlmostEqual(convert_frequency_to_hz(10, "Hz"), 10)
-
     def test_supports_khz(self) -> None:
         self.assertAlmostEqual(convert_frequency_to_hz(10, "kHz"), 10e3)
 
     def test_supports_mhz(self) -> None:
         self.assertAlmostEqual(convert_frequency_to_hz(10, "MHz"), 10e6)
 
+    def test_supports_ghz(self) -> None:
+        self.assertAlmostEqual(convert_frequency_to_hz(10, "GHz"), 10e9)
+
 
 class PulseSyncConfigPersistenceTest(unittest.TestCase):
-    def test_default_maximum_width_is_1000_us(self) -> None:
+    def test_default_awg_and_rf_safety_limits(self) -> None:
         config = PulseSyncConfig(visa_resource="USB0::TEST", tcp_host="127.0.0.1", tcp_port=9000)
-        self.assertAlmostEqual(config.width_range.maximum_s, 1000e-6)
+
+        self.assertAlmostEqual(config.width_range.minimum_s, 20e-9)
+        self.assertAlmostEqual(config.period_s, 0.1)
+        self.assertAlmostEqual(config.rf.frequency_range.minimum_hz, 100e3)
+        self.assertAlmostEqual(config.rf.frequency_range.maximum_hz, 20e9)
 
     def test_save_and_load_config_round_trip(self) -> None:
         config = PulseSyncConfig(
             visa_resource="USB0::TEST",
             tcp_host="127.0.0.1",
             tcp_port=9000,
-            width_range=PulseWidthRange(minimum_s=20e-9, maximum_s=1000e-6),
+            period_s=0.2,
+            width_range=PulseWidthRange(minimum_s=20e-9),
             rf=RfGeneratorConfig(
                 enabled=True,
                 visa_resource="USB0::RF",
@@ -190,7 +195,8 @@ class PulseSyncConfigPersistenceTest(unittest.TestCase):
         self.assertEqual(loaded.visa_resource, "USB0::TEST")
         self.assertEqual(loaded.tcp_host, "127.0.0.1")
         self.assertEqual(loaded.tcp_port, 9000)
-        self.assertAlmostEqual(loaded.width_range.maximum_s, 1000e-6)
+        self.assertAlmostEqual(loaded.period_s, 0.2)
+        self.assertAlmostEqual(loaded.width_range.minimum_s, 20e-9)
         self.assertTrue(loaded.rf.enabled)
         self.assertEqual(loaded.rf.visa_resource, "USB0::RF")
         self.assertAlmostEqual(loaded.rf.amplitude_dbm, -7.5)
@@ -224,6 +230,34 @@ class PulseSyncConfigPersistenceTest(unittest.TestCase):
         self.assertEqual(saved["rf"]["amplitude_dbm"], -10.0)
         self.assertNotIn("amplitude_vpp", saved["rf"])
 
+    def test_loads_legacy_frequency_hz_as_period_s(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "awg_tui_config.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "visa_resource": "USB0::TEST",
+                        "tcp_host": "127.0.0.1",
+                        "tcp_port": 9000,
+                        "frequency_hz": 20.0,
+                        "width_range": {
+                            "minimum_s": 20e-9,
+                            "maximum_s": 0.001,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            loaded = load_pulse_sync_config(path)
+            save_pulse_sync_config(path, loaded)
+            saved = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertAlmostEqual(loaded.period_s, 0.05)
+        self.assertEqual(saved["period_s"], 0.05)
+        self.assertNotIn("frequency_hz", saved)
+        self.assertNotIn("maximum_s", saved["width_range"])
+
     def test_load_rejects_invalid_json_shape(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "awg_tui_config.json"
@@ -236,9 +270,9 @@ class PulseSyncConfigPersistenceTest(unittest.TestCase):
             visa_resource="USB0::TEST",
             tcp_host="127.0.0.1",
             tcp_port=9000,
-            width_range=PulseWidthRange(minimum_s=1e-3, maximum_s=1e-4),
+            width_range=PulseWidthRange(minimum_s=0.0),
         )
-        with self.assertRaisesRegex(ValueError, "maximum_s must be greater"):
+        with self.assertRaisesRegex(ValueError, "minimum_s must be positive"):
             config.validate()
 
     def test_validate_rejects_enabled_rf_without_resource(self) -> None:
@@ -264,6 +298,47 @@ class PulseSyncConfigPersistenceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "amplitude_dbm"):
             config.validate()
 
+    def test_validate_rejects_rf_dbm_outside_safe_range(self) -> None:
+        config = PulseSyncConfig(
+            visa_resource="USB0::TEST",
+            tcp_host="127.0.0.1",
+            tcp_port=9000,
+            rf=RfGeneratorConfig(amplitude_dbm=31.0),
+        )
+        with self.assertRaisesRegex(ValueError, "30 dBm"):
+            config.validate()
+
+    def test_validate_rejects_awg_period_above_three_seconds(self) -> None:
+        config = PulseSyncConfig(
+            visa_resource="USB0::TEST",
+            tcp_host="127.0.0.1",
+            tcp_port=9000,
+            period_s=3.1,
+        )
+        with self.assertRaisesRegex(ValueError, "period_s"):
+            config.validate()
+
+    def test_validate_rejects_minimum_width_longer_than_period(self) -> None:
+        config = PulseSyncConfig(
+            visa_resource="USB0::TEST",
+            tcp_host="127.0.0.1",
+            tcp_port=9000,
+            period_s=10e-9,
+        )
+        with self.assertRaisesRegex(ValueError, "minimum_s"):
+            config.validate()
+
+    def test_validate_rejects_legacy_rf_hz_unit(self) -> None:
+        config = PulseSyncConfig(
+            visa_resource="USB0::TEST",
+            tcp_host="127.0.0.1",
+            tcp_port=9000,
+        )
+        config.rf.source_unit = "Hz"
+
+        with self.assertRaisesRegex(ValueError, "rf.source_unit"):
+            config.validate()
+
 
 class PulseWidthSyncServiceTest(unittest.TestCase):
     def make_service(
@@ -272,6 +347,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
         *,
         source_unit: str = "us",
         width_range: PulseWidthRange | None = None,
+        period_s: float = 0.1,
     ) -> tuple[PulseWidthSyncService, FakeVisaResource, PulseSyncState]:
         resource = FakeVisaResource()
         instrument = Keysight33600A(resource=resource)
@@ -280,6 +356,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
             tcp_host="127.0.0.1",
             tcp_port=9000,
             source_unit=source_unit,
+            period_s=period_s,
             width_range=width_range or PulseWidthRange(),
         )
         state = PulseSyncState()
@@ -322,7 +399,7 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
     def test_invalid_width_is_rejected_and_keeps_last_good_value(self) -> None:
         service, resource, state = self.make_service(
             ["VALUE 20.0", "VALUE 5000.0"],
-            width_range=PulseWidthRange(minimum_s=10e-9, maximum_s=1000e-6),
+            period_s=0.001,
         )
 
         service.poll_once(now=1.0)
@@ -331,6 +408,14 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
 
         self.assertEqual(len(resource.writes), first_write_count)
         self.assertAlmostEqual(state.last_applied_width_s or 0.0, 20e-6)
+        self.assertIn("pulse width must stay within", state.last_error or "")
+
+    def test_width_shorter_than_twenty_ns_is_rejected(self) -> None:
+        service, resource, state = self.make_service(["VALUE 10.0"], source_unit="ns")
+
+        service.poll_once(now=1.0)
+
+        self.assertEqual(resource.writes, [])
         self.assertIn("pulse width must stay within", state.last_error or "")
 
     def test_tcp_failure_sets_error_without_exiting(self) -> None:
