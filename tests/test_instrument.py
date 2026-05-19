@@ -136,6 +136,15 @@ class Keysight33600ATest(unittest.TestCase):
 
         self.assertEqual(resource.writes, ["FUNC:PULS:WIDT 2.5e-05"])
 
+    def test_set_output_enabled_writes_output_command(self) -> None:
+        resource = FakeVisaResource()
+        instrument = Keysight33600A(resource=resource)
+
+        instrument.set_output_enabled(False)
+        instrument.set_output_enabled(True)
+
+        self.assertEqual(resource.writes, ["OUTP OFF", "OUTP ON"])
+
     def test_configure_sine_output_writes_expected_sequence(self) -> None:
         resource = FakeVisaResource()
         instrument = Keysight33600A(resource=resource)

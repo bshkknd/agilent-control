@@ -410,13 +410,39 @@ class PulseWidthSyncServiceTest(unittest.TestCase):
         self.assertAlmostEqual(state.last_applied_width_s or 0.0, 20e-6)
         self.assertIn("pulse width must stay within", state.last_error or "")
 
-    def test_width_shorter_than_twenty_ns_is_rejected(self) -> None:
+    def test_width_shorter_than_twenty_ns_disables_awg_output(self) -> None:
         service, resource, state = self.make_service(["VALUE 10.0"], source_unit="ns")
 
         service.poll_once(now=1.0)
 
-        self.assertEqual(resource.writes, [])
-        self.assertIn("pulse width must stay within", state.last_error or "")
+        self.assertEqual(resource.writes, ["OUTP OFF"])
+        self.assertTrue(state.awg_output_disabled_for_width)
+        self.assertFalse(state.startup_applied)
+        self.assertAlmostEqual(state.last_width_s or 0.0, 10e-9)
+        self.assertIn("below AWG minimum", state.last_error or "")
+
+    def test_repeated_too_short_width_does_not_repeat_output_off(self) -> None:
+        service, resource, state = self.make_service(["VALUE 10.0", "VALUE 12.0"], source_unit="ns")
+
+        service.poll_once(now=1.0)
+        service.poll_once(now=2.0)
+
+        self.assertEqual(resource.writes, ["OUTP OFF"])
+        self.assertTrue(state.awg_output_disabled_for_width)
+
+    def test_valid_width_after_too_short_reapplies_full_preset(self) -> None:
+        service, resource, state = self.make_service(["VALUE 10.0", "VALUE 20.0"], source_unit="ns")
+
+        service.poll_once(now=1.0)
+        service.poll_once(now=2.0)
+
+        self.assertEqual(resource.writes[0], "OUTP OFF")
+        self.assertIn("FUNC PULS", resource.writes)
+        self.assertEqual(resource.writes[-1], "OUTP ON")
+        self.assertFalse(state.awg_output_disabled_for_width)
+        self.assertTrue(state.startup_applied)
+        self.assertTrue(state.sync_active)
+        self.assertIsNone(state.last_error)
 
     def test_tcp_failure_sets_error_without_exiting(self) -> None:
         resource = FakeVisaResource()

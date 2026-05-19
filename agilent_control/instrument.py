@@ -293,6 +293,9 @@ class Keysight33600A:
             raise ValueError("pulse_width_s must be positive")
         self.write(f"FUNC:PULS:WIDT {pulse_width_s:.12g}")
 
+    def set_output_enabled(self, enabled: bool) -> None:
+        self.write("OUTP ON" if enabled else "OUTP OFF")
+
     def set_sine_frequency(self, frequency_hz: float) -> None:
         if frequency_hz <= 0:
             raise ValueError("frequency_hz must be positive")

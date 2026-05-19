@@ -163,6 +163,7 @@ class PulseSyncState:
     poll_in_progress: bool = False
     pending_reconfigure: bool = False
     startup_applied: bool = False
+    awg_output_disabled_for_width: bool = False
     last_response: str | None = None
     last_server_value: float | None = None
     last_width_s: float | None = None
@@ -364,10 +365,24 @@ class PulseWidthSyncService:
             self.state.last_response = response.strip()
             server_value = parse_pulsewidth_response(response)
             pulse_width_s = convert_pulse_width_to_seconds(server_value, self.config.source_unit)
-            self.config.width_range.validate(pulse_width_s, self.config.period_s)
 
             self.state.last_server_value = server_value
             self.state.last_width_s = pulse_width_s
+            if pulse_width_s < self.config.width_range.minimum_s:
+                if not self.state.awg_output_disabled_for_width:
+                    self.instrument.set_output_enabled(False)
+                self.state.awg_output_disabled_for_width = True
+                self.state.startup_applied = False
+                self.state.sync_active = False
+                self.state.pending_reconfigure = True
+                self.state.last_error = "Pulse width below AWG minimum; output disabled"
+                return self.state
+
+            self.config.width_range.validate(pulse_width_s, self.config.period_s)
+
+            if self.state.awg_output_disabled_for_width:
+                self.state.awg_output_disabled_for_width = False
+                self.state.startup_applied = False
 
             if not self.state.startup_applied:
                 self.instrument.configure_ttl_single_pulse(
